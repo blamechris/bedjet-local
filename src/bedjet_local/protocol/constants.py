@@ -21,10 +21,35 @@ from typing import Final
 
 SERVICE_UUID: Final = "00001000-bed0-0080-aa55-4265644a6574"
 STATUS_UUID: Final = "00002000-bed0-0080-aa55-4265644a6574"
-NAME_UUID: Final = "00002001-bed0-0080-aa55-4265644a6574"
 COMMAND_UUID: Final = "00002004-bed0-0080-aa55-4265644a6574"
-# ❓ HYPOTHESIS, low confidence: single unlicensed source (bedjet-re). Not used yet.
+
+#: ⚠️ Upstream calls this "device name"; on our firmware a read returns 4 bytes
+#: (`43 4a 65 3a`) that are not a name. ✅ VERIFIED present, ❓ role unknown — see RL-007.
+NAME_UUID: Final = "00002001-bed0-0080-aa55-4265644a6574"
+
+#: 📖 role from bedjet-re (single unlicensed source); ✅ VERIFIED present on our device.
 SEQUENCE_UUID: Final = "00002005-bed0-0080-aa55-4265644a6574"
+
+#: ✅ VERIFIED present on our device 2026-08-16; documented in NO upstream source we found
+#: (RL-007). Purpose unknown. `2003` is write-only and therefore untouchable until we have a
+#: hypothesis and a reversal — see docs/SAFETY.md.
+UNDOCUMENTED_UUIDS: Final = (
+    "00002002-bed0-0080-aa55-4265644a6574",
+    "00002003-bed0-0080-aa55-4265644a6574",
+    "00002006-bed0-0080-aa55-4265644a6574",
+)
+
+#: The full characteristic set observed on our device, for labelling and for the hardware
+#: test that asserts the layout has not changed under a firmware update.
+CHARACTERISTICS: Final = {
+    STATUS_UUID: "status (write, read, notify)",
+    NAME_UUID: 'upstream "device name" — role unverified (RL-007)',
+    UNDOCUMENTED_UUIDS[0]: "undocumented (write, read)",
+    UNDOCUMENTED_UUIDS[1]: "undocumented (write only) — do not probe",
+    COMMAND_UUID: "command (write only)",
+    SEQUENCE_UUID: "biorhythm sequence fragments (write, read)",
+    UNDOCUMENTED_UUIDS[2]: "undocumented (write, read)",
+}
 
 # Name prefixes seen in the wild, used to filter discovery results.
 # ❓ HYPOTHESIS — our unit's advertised name is unknown until bring-up step 2.

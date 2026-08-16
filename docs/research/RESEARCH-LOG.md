@@ -167,7 +167,12 @@ Any BedJet within radio range is indistinguishable from ours by advertisement al
 ordering would have picked the right one here only by luck. Identification required a physical
 act (cutting power) that only the owner could perform. Expect to need an equivalent for the
 next physical device rather than assuming discovery yields identity.
-**Confidence:** high — a power-cycle correlation is about as unambiguous as a test gets
+**Confidence:** ~~high~~ → **medium, downgraded 2026-08-16 by RL-008.** The original wording
+here ("about as unambiguous as a test gets") was overstated. It assumed a scan is a complete
+census of what is in range. RL-008 shows it is not: our own unit was absent from a scan one
+minute before it connected successfully. Two correlated observations (vanished on unplug,
+returned on replug) still make the conclusion likely, but "probable" is the honest word, and
+the conclusive test is RL-008's remote correlation.
 **Provenance:** ✅ VERIFIED (our device)
 **Fixture:** —
 **Consequence:** our unit's address now lives in a **gitignored** local device registry
@@ -176,4 +181,98 @@ The neighbour's unit is not merely un-preferred, it is unreachable through this 
 deliberate `--force` (`src/bedjet_local/device/registry.py`).
 **Next question:** Does the device-name characteristic hold a user-settable name? If so, it is
 a better identity anchor than an address, and it would survive moving the daemon to a Pi — where
-the macOS address will not resolve at all.
+the macOS address will not resolve at all. **Answered by RL-007: no.**
+
+---
+
+## RL-007 — GATT enumeration: seven characteristics, three undocumented
+
+**Date:** 2026-08-16
+**Question:** Does our device expose the GATT layout upstream describes, and does the "device
+name" characteristic give us a stable identity anchor and a firmware version?
+**Setup:** `uv run bedjet identify <ours>`, connected for ~2 s, read-only. Vendor app closed.
+**Observation:** Connected first try, ~1 s. The service exposes **seven** characteristics:
+
+| UUID | Properties |
+|---|---|
+| `…2000` | write, read, notify |
+| `…2001` | write, read |
+| `…2002` | write, read |
+| `…2003` | write |
+| `…2004` | write |
+| `…2005` | write, read |
+| `…2006` | write, read |
+
+Reading `…2001` returned **4 bytes: `43 4a 65 3a`**.
+
+**Interpretation:** Upstream's four known characteristics are all present, which corroborates
+the survey. Three — `2002`, `2003`, `2006` — appear in **no upstream source we found**, including
+the ESPHome codec and `bedjet-re`. `2005` exists, corroborating `bedjet-re`'s otherwise
+single-sourced claim about sequence transfer.
+
+Two properties differ from upstream's description:
+
+- `2000` (status) is **writable**. Upstream treats it as notify + read. Purpose unknown.
+- `2004` (command) is **write-only** — no read property. Consistent with a command sink.
+
+`…2001` is **not a device name** on this firmware. `43 4a 65 3a` is not a plausible name and is
+not a fragment of `BedJet` (`42 65 64 4a 65 74`). Three untested explanations: it is a
+request/response channel rather than a static value (it is writable as well as readable, so a
+read may return the residue of the last request); a never-set user name showing uninitialised
+memory; or upstream's label is simply wrong for this revision. **No firmware version was found**
+— not in the advertisement, not here.
+**Confidence:** high for the observations; the interpretation of `2001` is open
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** — (characteristic read, not a status packet)
+**Next question:** Where is the firmware version? Candidates: the three undocumented
+characteristics, or the status packet's `update_phase` / flags region — which costs nothing to
+check, because watching status is the next bring-up step anyway. **The undocumented
+characteristics are NOT to be probed by writing.** Reading `2002`/`2006` is defensible (they are
+readable and a read does not change state); `2003` is write-only and therefore untouchable until
+we have a hypothesis, per `SAFETY.md`.
+
+---
+
+## RL-008 — A scan is not a census (and RSSI is not even stable)
+
+**Date:** 2026-08-16
+**Question:** How reliable is BLE discovery as evidence about what is in range? This matters
+because RL-006 identified our unit by *absence* from a scan.
+**Setup:** Two consecutive `bedjet discover` runs (10 s each), same position, ~1 minute apart,
+followed immediately by a successful `bedjet identify` against our unit.
+**Observation:**
+
+| Run | Ours | The other unit |
+|---|---|---|
+| Earlier (RL-005) | −75 dBm | **−95 dBm** |
+| Scan A | −74 dBm | **−75 dBm** |
+| Scan B | **absent** | −76 dBm |
+| `identify`, ~1 min later | **connected first try** | — |
+
+**Interpretation:** Two things that the earlier reasoning quietly assumed are false.
+
+1. **A scan is not a census.** Our unit was missing from Scan B and connected successfully
+   about a minute later. A device can be absent from a 10 s window while perfectly present and
+   healthy — advertising is intermittent, and macOS's scan results are a sample, not an
+   inventory.
+2. **RSSI is not even stable, let alone identifying.** The second unit moved 20 dB (−95 → −75)
+   between sessions. 20 dB is two orders of magnitude in power. Whatever caused it — a door, a
+   person, the laptop's position, interference — it means an RSSI reading carries almost no
+   information about which device is which, and not much about siting either.
+
+This **weakens RL-006**, which concluded ownership from a device disappearing when we cut its
+power. That inference needed "absent from the scan ⇒ not powered", and (1) says the implication
+does not hold. The conclusion is still *likely* — vanishing on unplug and returning on replug is
+two correlated events, not one — but it is no longer near-certain, and RL-006's confidence has
+been downgraded from high to medium accordingly.
+
+Consequence for Phase 2 siting (ADR-0001): **a single RSSI reading is worthless as survey
+data.** Siting must be judged on many samples over time, and on connection success and
+disconnect rate, not on a dBm number from one scan.
+**Confidence:** high
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** —
+**Next question — the conclusive ownership test, and it is read-only:** connect, subscribe to
+status, and operate our BedJet with **its physical remote**. If decoded state changes in step
+with our button presses, the unit is ours, with no inference from scan behaviour at all. This is
+bring-up steps 7–10 regardless, so it costs nothing extra. Run it before trusting RL-006.

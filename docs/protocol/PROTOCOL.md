@@ -50,17 +50,55 @@ recorded in a **gitignored** local registry, and the CLI refuses to connect to a
 from it. Expect to need an equivalent physical discriminator for the next device — this class
 of hardware does not identify itself.
 
+> ⚠️ **RL-006's conclusion is probable, not established** — see
+> [RL-008](../research/RESEARCH-LOG.md). Later scans showed the second unit swing from −95 dBm
+> to −75 dBm, and showed **our own unit missing from a scan entirely** one minute before it
+> connected successfully. A scan is therefore **not a census**, and "it disappeared when I
+> unplugged it" is weaker evidence than it looked. The conclusive test is remote correlation
+> (RL-008), and it is the next thing to run.
+
 ## GATT layout
 
-| UUID | Role | Properties | Provenance | Confidence |
-|---|---|---|---|---|
-| `00001000-bed0-0080-aa55-4265644a6574` | Service | — | ✅ VERIFIED 2026-08-16 — advertised by our unit | high |
-| `00002000-bed0-0080-aa55-4265644a6574` | Status | notify + read | 📖 ESPHome + MQTT bridge (independent agreement) | high |
-| `00002001-bed0-0080-aa55-4265644a6574` | Device name | read | 📖 both | high |
-| `00002004-bed0-0080-aa55-4265644a6574` | Command | write | 📖 both | high |
-| `00002005-bed0-0080-aa55-4265644a6574` | Biorhythm sequence fragments | write | 📖 `bedjet-re` only | low |
+**Enumerated on our device 2026-08-16** ([RL-007](../research/RESEARCH-LOG.md)). Properties
+below are what the device actually reports, not what upstream describes. The service exposes
+**seven** characteristics — three more than any upstream source documents.
 
-The trailing `4265644a6574` is ASCII `BedJet`.
+| UUID | Role | Properties (observed) | Provenance | Confidence |
+|---|---|---|---|---|
+| `00001000-…` | Service | — | ✅ VERIFIED 2026-08-16 | high |
+| `00002000-…` | Status | **`write`, read, notify** | ✅ VERIFIED 2026-08-16 (present + properties) | high |
+| `00002001-…` | "Device name" — **but see below** | `write`, read | ✅ VERIFIED present; ❓ role wrong | high / low |
+| `00002002-…` | **undocumented** | `write`, read | ✅ VERIFIED present; ❓ purpose unknown | — |
+| `00002003-…` | **undocumented** | `write` only | ✅ VERIFIED present; ❓ purpose unknown | — |
+| `00002004-…` | Command | `write` only | ✅ VERIFIED present + write-only | high |
+| `00002005-…` | Biorhythm sequence fragments | `write`, read | ✅ VERIFIED present; 📖 role from `bedjet-re` | medium |
+| `00002006-…` | **undocumented** | `write`, read | ✅ VERIFIED present; ❓ purpose unknown | — |
+
+All share the prefix `…-bed0-0080-aa55-4265644a6574`; the trailing `4265644a6574` is ASCII
+`BedJet`.
+
+Two deltas against upstream worth noting:
+
+- **`2000` is writable.** Upstream describes the status characteristic as notify + read. Ours
+  accepts writes. Purpose unknown, and **not to be probed** — an unexplained write to the
+  characteristic that carries device state is exactly the experiment `SAFETY.md` forbids
+  without a hypothesis and a reversal.
+- **`2004` is write-only**, with no read property. Consistent with a command sink.
+
+### `2001` is not a device name on our firmware
+
+Reading it returned **4 bytes: `43 4a 65 3a`** (`CJe:` as ASCII). That is not a name, and it is
+not a fragment of `BedJet` (`42 65 64 4a 65 74`). ✅ VERIFIED observation; ❓ interpretation
+entirely open. Candidate explanations, none tested:
+
+1. The characteristic is a **request/response channel**, not a static value — it is `write`
+   *and* `read`, so a read may be returning the residue of whatever was last requested.
+2. A user-settable name that has never been set, so we are seeing uninitialised memory.
+3. Upstream's "device name" label is simply wrong for this firmware revision.
+
+**Firmware version is still not found.** It is not in the advertisement and not in `2001`. It
+may live behind one of the three undocumented characteristics, or in the status packet's
+`update_phase`/flags region.
 
 ## Status packet
 

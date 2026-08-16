@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .device import registry
 from .device.state import BedJetState
-from .protocol.constants import COMMAND_UUID, NAME_UUID, SERVICE_UUID, STATUS_UUID
+from .protocol.constants import CHARACTERISTICS, NAME_UUID, SERVICE_UUID
 from .protocol.packets import StatusPacket
 from .service.reader import StatusReader
 from .transport.ble import BleakTransport, scan
@@ -103,19 +103,26 @@ async def cmd_identify(args: argparse.Namespace) -> int:
     try:
         print(f"\nConnected to {args.address}\n")
         layout = await transport.services()
-        known = {
-            SERVICE_UUID.lower(): "BedJet service",
-            STATUS_UUID.lower(): "status (notify+read)",
-            NAME_UUID.lower(): "device name",
-            COMMAND_UUID.lower(): "command (write)",
-        }
+        known = {uuid.lower(): label for uuid, label in CHARACTERISTICS.items()}
+        known[SERVICE_UUID.lower()] = "BedJet service"
+        unexpected: list[str] = []
         for service_uuid, characteristics in layout.items():
             label = known.get(service_uuid.lower(), "")
             print(f"service {service_uuid}  {label}")
             for char_uuid, properties in characteristics:
-                char_label = known.get(char_uuid.lower(), "")
-                print(f"    char {char_uuid}  [{', '.join(properties)}]  {char_label}")
+                char_label = known.get(char_uuid.lower())
+                if char_label is None and service_uuid.lower() == SERVICE_UUID.lower():
+                    char_label = "⚠️ NOT SEEN BEFORE — a finding, log it"
+                    unexpected.append(char_uuid)
+                print(f"    char {char_uuid}  [{', '.join(properties)}]  {char_label or ''}")
             print()
+
+        if unexpected:
+            print(
+                f"{len(unexpected)} characteristic(s) not in PROTOCOL.md. Either the firmware "
+                "changed\nor our table is incomplete — either way it belongs in the research "
+                "log.\n"
+            )
 
         try:
             name = await transport.read(NAME_UUID)

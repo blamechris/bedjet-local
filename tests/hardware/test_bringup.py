@@ -19,12 +19,7 @@ import os
 import pytest
 
 from bedjet_local.device.state import BedJetState
-from bedjet_local.protocol.constants import (
-    COMMAND_UUID,
-    NAME_UUID,
-    SERVICE_UUID,
-    STATUS_UUID,
-)
+from bedjet_local.protocol.constants import CHARACTERISTICS, SERVICE_UUID
 from bedjet_local.protocol.packets import StatusPacket
 from bedjet_local.service.reader import StatusReader
 from bedjet_local.transport.ble import BleakTransport, scan
@@ -64,12 +59,17 @@ async def test_step_5_gatt_layout_matches_documented_uuids() -> None:
             "our device does not expose the documented BedJet service — this invalidates "
             "the UPSTREAM assumptions in PROTOCOL.md, which is a finding, not a failure"
         )
-        for uuid, label in (
-            (STATUS_UUID, "status"),
-            (NAME_UUID, "name"),
-            (COMMAND_UUID, "command"),
-        ):
-            assert uuid.lower() in chars, f"missing {label} characteristic {uuid}"
+        for uuid, label in CHARACTERISTICS.items():
+            assert uuid.lower() in chars, f"missing characteristic {uuid} ({label})"
+
+        # RL-007 enumerated exactly seven. A new one appearing means the firmware changed
+        # under us, which is precisely the event PROTOCOL.md's provenance scheme exists to
+        # catch — so fail loudly rather than shrug.
+        surprises = chars - {u.lower() for u in CHARACTERISTICS}
+        assert not surprises, (
+            f"characteristics not seen during RL-007: {sorted(surprises)}. "
+            "Firmware may have changed — log this before trusting any VERIFIED row."
+        )
     finally:
         await transport.disconnect()
 
