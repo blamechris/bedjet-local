@@ -199,7 +199,13 @@ async def cmd_identify(args: argparse.Namespace) -> int:
 
 
 async def cmd_watch(args: argparse.Namespace) -> int:
-    """Bring-up steps 7-10: subscribe, observe, decode, and compare to the physical unit."""
+    """Bring-up steps 7-10: subscribe, observe, decode, and compare to a known state.
+
+    ``--seconds`` time-boxes the session so the BLE link is released on a timer rather than
+    on a clean exit. With no working physical remote (docs/SAFETY.md), the vendor app is the
+    owner's only other control path and it cannot connect while we hold the link — so a
+    session that hangs locks them out of their own heater. The timer is the guard.
+    """
     _check_ownership(args)
     transport = BleakTransport()
     await transport.connect(args.address, timeout=args.timeout)
@@ -221,15 +227,27 @@ async def cmd_watch(args: argparse.Namespace) -> int:
     await reader.start()
 
     print("\nWatching. The BedJet notifies rapidly while ON and is mostly silent while OFF —")
-    print("silence here is not necessarily a fault. Ctrl-C to stop.\n")
+    print("silence here is not necessarily a fault.")
+    if args.seconds:
+        print(
+            f"Releasing the link automatically after {args.seconds:.0f}s. Ctrl-C to stop early.\n"
+        )
+    else:
+        print("⚠️  No --seconds limit: the vendor app cannot connect until this exits.\n")
+
+    deadline: float | None = args.seconds if args.seconds else None
+    elapsed = 0.0
     try:
-        while True:
+        while deadline is None or elapsed < deadline:
             await asyncio.sleep(1.0)
+            elapsed += 1.0
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
+        # Always release the link. The owner's only other control path needs it back.
         await reader.stop()
         await transport.disconnect()
+        print("\nLink released — the vendor app can connect again.")
 
     print(f"\n{reader.packets_seen} packets seen ({reader.partials_seen} flagged partial).")
     if args.save and captures:
@@ -281,6 +299,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument("--timeout", type=float, default=20.0)
     p_watch.add_argument("--force", action="store_true", help=force_help)
     p_watch.add_argument("--raw", action="store_true", help="print raw packet hex")
+    p_watch.add_argument(
+        "--seconds",
+        type=float,
+        default=120.0,
+        metavar="S",
+        help="release the BLE link after S seconds (default 120). Use 0 to hold it "
+        "indefinitely — but the vendor app cannot connect while we do.",
+    )
     p_watch.add_argument("--save", type=Path, help="write last packet to file")
     p_watch.set_defaults(func=cmd_watch)
 

@@ -51,9 +51,9 @@ Strictly sequential. Do not skip forward because an earlier step "obviously work
 | 5 | Enumerate GATT services | no |
 | 6 | Enumerate characteristics and their properties | no |
 | 7 | Subscribe to the status characteristic | no |
-| 8 | Observe raw status packets, unit **off** then **on** via the physical remote | no |
+| 8 | Observe raw status packets, unit **off** then **on** (set via the vendor app, then release the link) | no |
 | 9 | Decode state | no |
-| 10 | **Validate decoded state against the physical unit and the vendor app** | no |
+| 10 | **Validate decoded state against a known state set in the vendor app** | no |
 | — | ⬆ **Milestone 1 ends here. Everything above is read-only.** | |
 | 11 | First write ever: **`01 01` — OFF** | ✅ first write |
 | 12 | Fan-only mode at low speed | ✅ |
@@ -72,17 +72,43 @@ Use the manufacturer's own limits as hard bounds in software:
 
 - Target temperature clamped to the device's documented range (≈66–104 °F / 19–40 °C), and the
   clamp is enforced in `device/`, above the protocol layer, so no adapter can route around it.
-- Never send a target above what the physical remote itself permits.
+- Never send a target above what the vendor app itself permits.
 - Runtime/timer values stay within the device's documented maxima.
 - If the device reports a value outside its own documented range, **surface it as an anomaly**;
   never silently clamp a *decode*. Clamping inputs is safety; clamping observations is lying.
 
 ## Physical-safety escape hatches
 
-- The **physical remote is not a BLE client** and is unaffected by anything we do over
-  Bluetooth. The owner can always override us at the device.
-- The unit's own thermal protection remains in force; we do not go near it.
-- Unplugging is always available and always correct if anything is behaving unexpectedly.
+> ⚠️ **Corrected 2026-08-16. This section previously claimed "the physical remote is not a BLE
+> client, so the owner can always override us at the device." That is false for this
+> installation: we have no working physical remote.** The claim was written from the general
+> case and never checked against our actual setup — exactly the upstream-assumed-as-observed
+> error this project's provenance rules exist to prevent, applied to a safety claim rather
+> than a protocol one.
+
+The override paths that actually exist here, in order of preference:
+
+1. **Unplug it at the wall.** Always available, always correct, needs no software, no radio,
+   and no working link. **This is the primary escape hatch, not the last resort** — treat it
+   that way when planning any experiment.
+2. **The vendor app** (BedJet 3 Smart Remote, Android). Real, but **not** an independent path:
+   the BedJet permits one BLE client at a time, so the app can only take over *after our client
+   releases the link*. If our software is connected — or wedged while connected — the app
+   cannot get in until we disconnect or the connection drops.
+3. The unit's own thermal protection remains in force; we do not go near it.
+
+**Consequence for Milestone 2.** With no remote, our software and the app are the only control
+paths, and they are mutually exclusive. Every control experiment must therefore:
+
+- run **time-boxed**, so the link is released automatically rather than depending on a clean
+  exit (`bedjet watch --seconds N`);
+- leave the device in a **safe state before disconnecting** — never end a session with heat
+  running and the link dropped;
+- treat "unplug it" as the answer to anything unexpected, rather than "let me reconnect and
+  fix it", because reconnecting may be exactly what is failing.
+
+The reason this matters more than it sounds: a wedged BLE connection would otherwise lock the
+owner out of the only remaining control path for their own heater.
 
 ## For agents specifically
 

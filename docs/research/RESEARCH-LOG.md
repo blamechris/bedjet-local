@@ -393,3 +393,58 @@ another is worse than no display in a project whose entire discipline is provena
 **Next question:** Does the link hold well enough *while connected* to sustain a notification
 stream, or does it drop mid-session? Connected-mode behaviour is a different question from
 advertising visibility, and `watch` answers it directly.
+
+---
+
+## RL-011 — No working physical remote: the validation method has to change
+
+**Date:** 2026-08-16
+**Question:** Every bring-up plan so far assumed a physical remote as the independent control
+path — for the ownership test, for setting known states, and as the safety escape hatch. The
+remote is broken. What replaces it?
+**Setup:** Owner-reported constraint: control is via the **BedJet 3 Smart Remote** app
+(Android) only.
+**Observation / consequences:**
+
+**1. A safety claim in `SAFETY.md` was wrong and has been corrected.** It stated "the physical
+remote is not a BLE client and is unaffected by anything we do over Bluetooth — the owner can
+always override us at the device." That was written from the general case and never checked
+against this installation. It is the same error class the provenance rules exist to prevent —
+upstream/general knowledge asserted as an observation — applied to a *safety* claim, which is
+worse than getting a byte offset wrong.
+
+The real override paths are now, in order: **unplug it at the wall** (primary — always
+available, needs no radio), then the vendor app (**not independent**: one BLE client at a time,
+so it can only take over after we release the link).
+
+**2. Simultaneous observation is impossible.** The planned "operate the remote while watching
+the stream" test cannot be run: the app and our client cannot both hold the link.
+
+**3. But it does not need to be simultaneous — the device holds its own state.** Set a known
+state in the app, release the app's link, connect ours, read it back. That is *better* evidence
+than live correlation for fixtures, because the ground truth is exact and recorded in advance
+rather than inferred from a button press at an approximate moment.
+
+**4. The ownership test is replaced by an app-correlation test.** While the app is connected to
+our BedJet, that unit should refuse our connection — and, if peripherals here stop advertising
+while connected (RL-009's open sub-question), may vanish from scans entirely. Whichever address
+responds to the app's presence is the one the app controls, and the app is paired to our unit.
+
+**Interpretation:** The constraint costs us live correlation and gains us exact, pre-recorded
+ground truth. Net effect on fixture quality is positive. The safety cost is real, though, and is
+the reason `bedjet watch` now defaults to **releasing the link after 120 s** (`--seconds`): a
+hung session would otherwise lock the owner out of the only remaining control path to their own
+heater.
+**Confidence:** high
+**Provenance:** ✅ VERIFIED (owner-reported installation fact)
+**Fixture:** —
+**Next question:** the revised step 8–10 procedure, run once per state:
+
+1. App: set an exact, written-down state (mode, fan %, target).
+2. **Force-close the app** to release the link.
+3. `bedjet watch <ours> --raw --seconds 60 --save tests/fixtures/<name>.bin`
+4. Compare decoded output against what was set; record in `PROVENANCE.md`.
+5. Repeat for a different fan % and a different mode.
+
+Two states at different fan percentages settle RL-002; two at different modes settle RL-003;
+every capture contributes to RL-004.
