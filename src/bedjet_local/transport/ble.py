@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 
 from bleak import BleakClient, BleakScanner
-from bleak.exc import BleakError
+from bleak.exc import BleakDeviceNotFoundError, BleakError
 
 from ..protocol.constants import NAME_PREFIXES, SERVICE_UUID
 from .base import DiscoveredDevice, NotifyCallback, TransportError
@@ -74,15 +74,29 @@ class BleakTransport:
         client = BleakClient(address, timeout=timeout)
         try:
             await client.connect()
+        except BleakDeviceNotFoundError as exc:
+            # NOT a refused connection: bleak resolves an address by scanning first, and
+            # this means the device never appeared. Conflating the two sends the reader to
+            # entirely the wrong problem (RL-009), so they get separate messages.
+            raise TransportError(
+                f"{address} did not appear in a {timeout:.0f}s scan, so no connection was "
+                "attempted.\n"
+                "The device is not advertising. Common causes, cheapest first:\n"
+                "  · another client holds the link (the vendor app on a phone) — many BLE "
+                "peripherals stop advertising while connected\n"
+                "  · the unit lost power, or has gone into a deep idle\n"
+                "  · it is out of range, or the radio path changed\n"
+                "  · on macOS this address is a host-local CoreBluetooth UUID; if the "
+                "device rotated its BLE address, macOS may now know it under a different "
+                "one (see RL-009) — re-run `bedjet discover`"
+            ) from exc
         except BleakError as exc:
-            # The BedJet permits exactly one BLE client at a time, so "the phone app is
-            # connected" and "the device is out of range" both surface here. Say so,
-            # rather than reporting a bare timeout that sends the reader to the wrong
-            # problem.
+            # Found, but the link was refused or dropped. The BedJet permits exactly one
+            # BLE client at a time, which is the usual reason.
             raise TransportError(
                 f"could not connect to {address}: {exc}. "
-                "The BedJet allows only one BLE client at a time — check that the vendor "
-                "app is not connected, and that the unit is in range."
+                "The device was found but refused the link. The BedJet allows only one BLE "
+                "client at a time — check that the vendor app is not connected."
             ) from exc
         self._client = client
         log.info("connected to %s", address)

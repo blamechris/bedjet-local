@@ -19,6 +19,7 @@ from .device.state import BedJetState
 from .protocol.constants import CHARACTERISTICS, NAME_UUID, SERVICE_UUID
 from .protocol.packets import StatusPacket
 from .service.reader import StatusReader
+from .transport.base import DiscoveredDevice
 from .transport.ble import BleakTransport, scan
 
 log = logging.getLogger("bedjet")
@@ -33,36 +34,69 @@ def _setup_logging(debug: bool) -> None:
 
 
 async def cmd_discover(args: argparse.Namespace) -> int:
-    """Bring-up steps 1-3: discover, identify, inspect advertising data."""
-    print(f"Scanning for {args.timeout:.0f}s...")
-    devices = await scan(timeout=args.timeout, all_devices=args.all)
-    if not devices:
-        print("\nNo BedJet found.")
+    """Bring-up steps 1-3: discover, identify, inspect advertising data.
+
+    With ``--repeat`` this becomes a presence survey rather than a snapshot. RL-008
+    established that a single scan is a *sample*, not a census — a healthy device can be
+    absent from one 10 s window — so "is it there?" and "how good is this location?" both
+    need several rounds, not one.
+    """
+    known = registry.load()
+    seen: dict[str, list[DiscoveredDevice]] = {}
+
+    for index in range(args.repeat):
+        if args.repeat > 1:
+            print(f"Scan {index + 1}/{args.repeat} ({args.timeout:.0f}s)...")
+        else:
+            print(f"Scanning for {args.timeout:.0f}s...")
+        devices = await scan(timeout=args.timeout, all_devices=args.all)
+        for device in devices:
+            seen.setdefault(device.address.lower(), []).append(device)
+        if args.repeat > 1:
+            summary = ", ".join(f"{d.name or '?'} {d.rssi}dBm" for d in devices) or "nothing"
+            print(f"  → {summary}")
+            if index + 1 < args.repeat:
+                await asyncio.sleep(args.interval)
+
+    if not seen:
+        print("\nNo BedJet found in any scan.")
         print("  · Is the unit powered?")
-        print("  · Is the vendor app connected? Only one BLE client at a time is allowed.")
+        print("  · Is the vendor app connected? Only one BLE client at a time is allowed,")
+        print("    and many BLE peripherals stop advertising entirely while connected.")
         print("  · Are you within ~10m, ideally same room?")
         print("  · Try --all to list every nearby device, in case ours advertises")
         print("    under a name we do not recognise.")
+        print("  · Try --repeat 5: a single scan is a sample, not a census (RL-008).")
         return 1
 
-    known = registry.load()
-    print(f"\nFound {len(devices)} device(s):\n")
+    print(f"\nFound {len(seen)} device(s) across {args.repeat} scan(s):\n")
     unregistered = 0
-    for device in devices:
-        print(f"  {device.describe()}")
-        if device.service_uuids:
-            print(f"      services: {', '.join(device.service_uuids)}")
-        for company_id, payload in device.manufacturer_data:
+    for address, samples in seen.items():
+        latest = samples[-1]
+        print(f"  {latest.describe()}")
+        if args.repeat > 1:
+            rssis = [d.rssi for d in samples if d.rssi is not None]
+            span = f"{min(rssis)}..{max(rssis)} dBm" if rssis else "rssi unknown"
+            print(f"      seen in {len(samples)}/{args.repeat} scans, {span}")
+        if latest.service_uuids:
+            print(f"      services: {', '.join(latest.service_uuids)}")
+        for company_id, payload in latest.manufacturer_data:
             print(f"      mfr 0x{company_id:04x}: {payload.hex(' ')}")
-        if SERVICE_UUID.lower() in device.service_uuids:
+        if SERVICE_UUID.lower() in latest.service_uuids:
             print("      ✅ advertises the BedJet service UUID")
-        entry = known.get(device.address.lower())
+        entry = known.get(address)
         if entry is not None:
             print(f"      ✅ ours: {entry.label}")
         else:
             unregistered += 1
             print("      ⛔ not in the device registry — will not be connected to")
         print()
+
+    missing = [d for d in known.values() if d.address.lower() not in seen]
+    for absent in missing:
+        print(f"  ⚠️  registered device '{absent.label}' was not seen in any scan.")
+        print("      Powered? Vendor app holding the link? On macOS the address is a")
+        print("      host-local UUID and can change if the device rotates its BLE address.\n")
 
     if unregistered:
         # RL-006: a neighbour's BedJet is indistinguishable from ours by advertisement.
@@ -73,7 +107,7 @@ async def cmd_discover(args: argparse.Namespace) -> int:
             f"{registry.registry_path()}.\n"
         )
     print("Record these observations in docs/research/RESEARCH-LOG.md before you forget them.")
-    return 0
+    return 0 if not missing else 1
 
 
 def _check_ownership(args: argparse.Namespace) -> None:
@@ -195,6 +229,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--all",
         action="store_true",
         help="list every nearby BLE device, not just BedJet-looking ones",
+    )
+    p_discover.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        metavar="N",
+        help="scan N times and report presence per device — a single scan is a sample, "
+        "not a census (RL-008)",
+    )
+    p_discover.add_argument(
+        "--interval", type=float, default=5.0, metavar="S", help="seconds between repeats"
     )
     p_discover.set_defaults(func=cmd_discover)
 

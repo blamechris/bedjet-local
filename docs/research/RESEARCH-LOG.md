@@ -276,3 +276,54 @@ disconnect rate, not on a dBm number from one scan.
 status, and operate our BedJet with **its physical remote**. If decoded state changes in step
 with our button presses, the unit is ours, with no inference from scan behaviour at all. This is
 bring-up steps 7–10 regardless, so it costs nothing extra. Run it before trusting RL-006.
+
+---
+
+## RL-009 — Our unit stopped advertising entirely (OPEN)
+
+**Date:** 2026-08-16
+**Question:** Why did `bedjet watch` fail 30 minutes after a successful `identify`?
+**Setup:** `identify` succeeded at 15:35 (connected in ~1 s, clean disconnect). `watch`
+attempted at 16:05 against the same address; a `discover` followed immediately.
+**Observation:** `watch` failed after the full 20 s timeout with bleak's
+`BleakDeviceNotFoundError` — *"Device with address … was not found"*. The following scan found
+**only the other unit**, at −83 dBm. Ours appeared in **no** scan. RSSI history for the other
+unit is now −95, −75, −76, −83.
+**Interpretation:** Two distinct things happened, and the tooling initially hid one of them.
+
+1. **The failure was a discovery failure, not a refused connection.** Bleak resolves an
+   address by scanning before it connects, so "not found" means no connection was ever
+   attempted. Our error message said *"the BedJet allows only one BLE client at a time — check
+   the vendor app"*, which describes a refusal and points at the wrong cause entirely. Fixed:
+   `BleakDeviceNotFoundError` is now caught separately with an accurate message.
+2. **Our unit is not advertising.** Candidate causes, cheapest to test first:
+   - **Another client holds the link.** Many BLE peripherals stop advertising while
+     connected, and the BedJet permits exactly one client. The vendor app on a phone
+     reconnecting in the background would produce exactly this. *Most likely.*
+   - **The unit lost power or entered a deep idle.** It was found in earlier scans while
+     off, so merely being off does not stop advertising — but a longer idle might.
+   - **Our own earlier session left it in a bad state.** The disconnect looked clean, but a
+     peripheral that fails to resume advertising after a client leaves is a known BLE bug
+     class. If a power cycle restores it, this is the answer.
+   - **BLE address rotation.** On macOS the address is a host-local CoreBluetooth UUID
+     derived from the peripheral's identity. If the device rotated to a new random address,
+     macOS could know it under a *different* UUID — and our registry, keyed on the old one,
+     would never match again. This would also explain RL-008's oddities, including two
+     entries at once and the 20 dB swing, if the "other" unit were ever ours under a second
+     identity.
+**Confidence:** high that it is not advertising; **the cause is untested**
+**Provenance:** ✅ VERIFIED (observation) / ❓ HYPOTHESIS (cause)
+**Fixture:** —
+**Consequence for the architecture:** if address rotation is real, **address-keyed identity is
+unusable on macOS**, and the registry needs a different anchor. This strengthens the case for
+moving to a Pi sooner than ADR-0001's Phase 3 planned: BlueZ exposes real MAC addresses, so a
+Linux host would settle the rotation question outright and give us a stable key.
+**Next question:** the diagnostic ladder, in order — (a) is the vendor app open on the phone?
+(b) `bedjet discover --repeat 5`, since one scan is not a census; (c) power-cycle the unit and
+re-scan immediately; (d) if a **new** UUID appears where ours used to be, rotation is confirmed
+and the registry design changes.
+
+`bedjet discover --repeat N --interval S` was added for exactly this: it reports presence as
+"seen in K/N scans" with an RSSI span, and warns when a *registered* device is absent from all
+of them. It also gives ADR-0001's Phase 2 siting survey the many-samples basis RL-008 says it
+needs.
