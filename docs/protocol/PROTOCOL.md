@@ -15,8 +15,10 @@ by a fixture captured from our BedJet and a test that asserts against it. Silent
 upstream behaviour into a claim about our hardware is the specific failure this document
 exists to prevent.
 
-**Current state: bring-up steps 1–3 (discovery) are complete. Advertising-layer rows below are
-✅ VERIFIED. Everything requiring a connection is still 📖 or ❓ — we have not yet connected.**
+**Current state: Milestone 1 complete — discover → connect → read state, all verified against
+our own hardware.** The header layout, temperature encoding, fan scaling, and mode location are
+✅ VERIFIED against a fixture captured with the device in a known state. Bytes 19–25, byte 30,
+most of the status-mode table, and the firmware version remain open.
 
 ---
 
@@ -32,11 +34,11 @@ See [RL-005](../research/RESEARCH-LOG.md).
 | Advertised service UUIDs | `00001000-bed0-0080-aa55-4265644a6574` only | ✅ VERIFIED 2026-08-16 | high |
 | Manufacturer data | **none present** in the advertisement | ✅ VERIFIED 2026-08-16 | high |
 | Address form | CoreBluetooth UUID on macOS, as predicted; **not** a MAC | ✅ VERIFIED 2026-08-16 | high |
-| **Units visible** | **two**, both `BEDJET_V3`, at −74 dBm and −95 dBm | ✅ VERIFIED 2026-08-16 | high |
-| **Ours** | the −74 dBm unit — identified by power-cycle correlation (RL-006) | ✅ VERIFIED 2026-08-16 | high |
-| **Not ours** | the −95 dBm unit — a neighbour's. **Never connect to it.** | ✅ VERIFIED 2026-08-16 | high |
+| **Units visible** | **two**, both `BEDJET_V3`; ours ranges −95 … −73 dBm (22 dB spread, RL-010) | ✅ VERIFIED 2026-08-16 | high |
+| **Ours** | confirmed by reading back a state we set in our own app (RL-012) | ✅ VERIFIED 2026-08-16 | high |
+| **Not ours** | the second unit — a neighbour's. **Never connect to it.** | ✅ VERIFIED 2026-08-16 | high |
 | We own | **one** BedJet | ✅ VERIFIED 2026-08-16 | high |
-| Our firmware/hw rev | "v1.2.0" — still unresolved; not present in the advertisement | ❓ must read after connecting | low |
+| Our firmware/hw rev | "v1.2.0" — **still unresolved**: not in the advertisement, not in `2001`, not identified in the status packet | ❓ | low |
 
 **The advertisement carries no distinguishing information.** Same name, same service UUID, no
 manufacturer data, and a host-local address that means nothing on another machine. RSSI is the
@@ -50,12 +52,10 @@ recorded in a **gitignored** local registry, and the CLI refuses to connect to a
 from it. Expect to need an equivalent physical discriminator for the next device — this class
 of hardware does not identify itself.
 
-> ⚠️ **RL-006's conclusion is probable, not established** — see
-> [RL-008](../research/RESEARCH-LOG.md). Later scans showed the second unit swing from −95 dBm
-> to −75 dBm, and showed **our own unit missing from a scan entirely** one minute before it
-> connected successfully. A scan is therefore **not a census**, and "it disappeared when I
-> unplugged it" is weaker evidence than it looked. The conclusive test is remote correlation
-> (RL-008), and it is the next thing to run.
+> ✅ **Ownership CONFIRMED 2026-08-16 (RL-012).** The unit reported back the exact state we had
+> set in our own vendor app — independent of any scan behaviour. This supersedes the earlier
+> power-test inference, which RL-008 had correctly downgraded after showing that a scan is not a
+> census and that our unit's signal swings 22 dB while stationary.
 
 ## GATT layout
 
@@ -102,46 +102,75 @@ may live behind one of the three undocumented characteristics, or in the status 
 
 ## Status packet
 
-Layout below is the **ESPHome-documented** structure, adopted as our primary hypothesis
-because it is the more complete of the two upstream descriptions and the two agree wherever
-both speak (offsets 4–8, 10).
+✅ **Layout verified 2026-08-16** against `tests/fixtures/cool_fan50_target75f.bin`, captured
+with the vendor app set to a known state (Cool, fan 50 %, target 75 °F) written down *before*
+the capture. Three fields matched that ground truth exactly.
 
-| Offset | Field | Encoding | Provenance | Confidence |
+**Observed packet length: 31 bytes.** Upstream's documented layout ends at byte 29.
+
+### Header — bytes 0–3 ✅ VERIFIED
+
+| Offset | Field | Observed | Confidence |
+|---|---|---|---|
+| 0 | Partial flag | `0x01` | medium — see note |
+| 1 | Packet format | `0x56` = V3 home | high |
+| 2 | **Payload length** | `0x1b` = 27 | **high** — 27 + 4 = 31 = actual size |
+| 3 | Packet type | `0x01` = status | high |
+
+Our original guess put length first and format third. It was wrong, and one capture corrected
+it — which is exactly why `StatusPacket.header` retains the raw bytes.
+
+> **The length byte, not the flag, decides completeness.** The partial flag is set on the first
+> fragment and therefore remains set after reassembly, so keying off it loops. `is_complete` is
+> `len(raw) >= declared_length + 4`. A length the device asserts about itself is better evidence
+> than a flag we only half understand.
+
+### Body
+
+| Offset | Field | Encoding | Observed | Provenance |
 |---|---|---|---|---|
-| 0–3 | Header: packet format, type, length, **partial flag** | format `0x56` = V3 home, `0x05` = debug; type `0x1` = status, `0x2` = debug | 📖 ESPHome | medium |
-| 4 | Time remaining — hours | uint8 | 📖 both | high |
-| 5 | Time remaining — minutes | uint8 | 📖 both | high |
-| 6 | Time remaining — seconds | uint8 | 📖 both | high |
-| 7 | **Actual** temperature | `2 × °C` | 📖 both (see note) | high |
-| 8 | **Target** temperature | `2 × °C` | 📖 both (see note) | high |
-| 9 | Mode | enum, see below | 📖 ESPHome | medium ⚠️ contested |
-| 10 | Fan speed | step index 0–19 | 📖 both | high ⚠️ scaling contested |
-| 11–14 | Max runtime, min/max temperature bounds | uint8 ×4 | 📖 ESPHome | low |
-| 13–14 | *(alt.)* mode disambiguation bytes | — | ❓ MQTT bridge reads mode here | low ⚠️ conflicts with 11–14 |
-| 15–16 | Turbo time remaining | uint16 | 📖 ESPHome | low |
-| 17 | Ambient temperature | `2 × °C` (assumed) | 📖 ESPHome | low |
-| 18 | Shutdown reason | enum, values unknown | 📖 ESPHome | low |
-| 19–25 | **unknown** | — | ❓ | — |
-| 26 | Firmware update phase | uint8 | 📖 ESPHome | low |
-| 27 | Flags bitfield — LEDs, units (°C/°F), beeps, connection test | bitfield, bit positions unknown | 📖 ESPHome | low |
-| 28 | Biorhythm sequence step | uint8 | 📖 ESPHome | low |
-| 29 | Notification code | uint8 | 📖 ESPHome | low |
+| 4–6 | Time remaining h/m/s | uint8 ×3 | 9:59:25 | ✅ VERIFIED |
+| 7 | Actual temperature | `2 × °C` | `0x2d` → 22.5 °C | ✅ VERIFIED |
+| 8 | **Target temperature** | `2 × °C` | `0x30` → 24.0 °C = **75.2 °F** | ✅ VERIFIED — app was set to 75 °F |
+| 9 | **Mode** (status enum) | see below | `0x04` = **Cool** | ✅ VERIFIED — app was set to Cool |
+| 10 | **Fan** | step index | `0x09` → **50 %** | ✅ VERIFIED — app was set to 50 % |
+| 11–12 | Max runtime h/m | uint8 ×2 | `0x0c 0x00` = 12:00 | ❓ plausible |
+| 13 | Min temperature bound | `2 × °C` | `0x26` → 19.0 °C = **66.2 °F** | ❓ matches the documented minimum |
+| 14 | Max temperature bound | `2 × °C` | `0x34` → 26.0 °C = 78.8 °F | ❓ **not** the documented 104 °F max — Cool-mode limit? |
+| 15–16 | Turbo time | uint16 | `0x00 0x00` | ❓ |
+| 17 | Ambient temperature | `2 × °C` | `0x29` → 20.5 °C | ❓ plausible |
+| 18 | Shutdown reason | uint8 | `0x00` | ❓ |
+| 19–25 | **unknown** | — | `12 01 9a 01 10 ff 00` | ❓ opaque |
+| 26 | Update phase | uint8 | `0x15` | ❓ |
+| 27 | Flags bitfield | bitfield | `0x34` | ❓ bit positions unknown |
+| 28 | Sequence step | uint8 | `0x00` | ❓ |
+| 29 | Notify code | uint8 | `0x00` | ❓ |
+| **30** | **beyond upstream's layout** | — | `0x31` | ❓ unaccounted for by any public source |
 
-### Partial packets — the important one
+### ⚠️ Status modes are NOT command modes
 
-The V3 status packet **exceeds the BLE notification payload size**. The notification sets
-`is_partial = 1` in the header, and the remainder must be retrieved by an **explicit read** of
-the status characteristic. An implementation that only subscribes will silently see truncated
-state. 📖 ESPHome, high confidence — and the first thing to confirm on real hardware, because
-it determines the whole read loop's shape.
+The single most consequential finding so far (RL-012). With the app set to **Cool**, byte 9
+read `0x04` — which every upstream *command* table calls **turbo**. Decoding status with the
+command enum produced `mode=turbo` for a unit that was cooling, silently and plausibly.
+
+Upstream command tables describe what you **send**. Nothing we found states that the status
+byte uses a different enum. It does.
+
+| Status value | Meaning | Provenance |
+|---|---|---|
+| `0x04` | **Cool** | ✅ VERIFIED 2026-08-16 |
+| everything else | **unknown** | ❓ capture one state per mode to fill in |
+
+`StatusMode` therefore contains only `COOL`. Any other value decodes to `None` with an anomaly
+rather than to a guess, and `Power` stays `UNKNOWN` unless the mode is verified. A
+plausible-looking wrong mode is worse than an admitted unknown on a device that makes heat.
 
 ### Notification behaviour
 
-Rapid notifications while the unit is **on**; generally silent while **off**. 📖 ESPHome.
-`MIN_NOTIFY_THROTTLE` upstream is 15 s; upstream also treats "no status within a timeout" as a
-dead link. **Consequence: silence is ambiguous** — off, or disconnected. Our device model must
-represent `available` (link) separately from `power` (device state) and must not infer one
-from the other.
+Rapid notifications while the unit is **on**; near-silent while **off** (📖 UPSTREAM). Status
+arrives split: a notification carrying part of the packet, completed by an explicit read of the
+same characteristic. ✅ VERIFIED — 55 notifications in ~60 s, each reassembling to the declared
+31 bytes.
 
 ## Commands — characteristic `…2004`, write
 
@@ -194,16 +223,14 @@ observation.
 Documented operating range is 66–104 °F (≈19–40 °C), i.e. bytes ≈38–80. Bytes outside that
 range should decode but be flagged, not clamped silently.
 
-## Fan-speed encoding — genuinely contested
+## Fan-speed encoding — ✅ SETTLED
 
 - ESPHome: `percent = 5 + 5 × step` → step 0 = 5 %, step 19 = 100 %.
 - MQTT bridge: `percent = step × 5` → step 20 = 100 %.
 
-A one-step disagreement. Since the index is documented as 0–19 (20 values), ESPHome's mapping
-is the self-consistent one (0→5 %, 19→100 %) and the bridge's would need step 20 to reach
-100 %. **We implement ESPHome's and mark it ❓ until measured.** Resolution is trivial: set a
-known percentage on the physical remote, read byte 10. Logged as
-[RL-002](../research/RESEARCH-LOG.md).
+✅ **ESPHome is correct.** With the vendor app set to **50 %**, byte 10 read `0x09` (step 9):
+ESPHome's formula gives 50, the bridge's gives 45. Verified against ground truth, fixture
+`cool_fan50_target75f.bin`, [RL-002](../research/RESEARCH-LOG.md).
 
 ## Unknowns requiring physical experiments
 

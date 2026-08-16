@@ -15,14 +15,15 @@ from __future__ import annotations
 from .constants import (
     FAN_STEP_MAX,
     FAN_STEP_MIN,
+    HEADER_LENGTH,
     MAX_TARGET_C,
     MIN_STATUS_LENGTH,
     MIN_TARGET_C,
     PACKET_FORMAT_DEBUG,
     PACKET_FORMAT_V3_HOME,
     UNKNOWN_REGION,
-    Mode,
     Offset,
+    StatusMode,
     fan_step_to_percent,
     temp_byte_to_c,
 )
@@ -51,14 +52,13 @@ def decode_status(data: bytes) -> StatusPacket:
     if not data:
         return StatusPacket(raw=b"", header=b"", anomalies=("empty packet",))
 
-    header = bytes(data[:4])
+    header = bytes(data[:HEADER_LENGTH])
 
-    # ❓ HYPOTHESIS (RL-004): upstream documents a 4-byte header carrying format, type,
-    # length and a partial flag, but not their order. We interpret it, flag it when it
-    # disagrees with expectations, and always keep `header` raw so a real capture can
-    # correct us without invalidating the fixture.
+    # ✅ VERIFIED header layout (RL-004), settled by the first real capture:
+    #   [0] partial flag, [1] format 0x56, [2] payload length, [3] type 0x01.
     packet_format = _u8(data, Offset.PACKET_FORMAT)
     packet_type = _u8(data, Offset.PACKET_TYPE)
+    declared_length = _u8(data, Offset.PAYLOAD_LENGTH)
     is_partial = bool(_u8(data, Offset.IS_PARTIAL))
 
     if packet_format is not None and packet_format not in (
@@ -66,8 +66,15 @@ def decode_status(data: bytes) -> StatusPacket:
         PACKET_FORMAT_DEBUG,
     ):
         anomalies.append(
-            f"unexpected packet format 0x{packet_format:02x} at offset "
-            f"{int(Offset.PACKET_FORMAT)} (header hypothesis may be wrong — see RL-004)"
+            f"unexpected packet format 0x{packet_format:02x} at offset {int(Offset.PACKET_FORMAT)}"
+        )
+
+    # The device declares its own size, so we can check it rather than assume it. This is
+    # the strongest integrity check available without a checksum.
+    if declared_length is not None and len(data) < declared_length + HEADER_LENGTH:
+        anomalies.append(
+            f"incomplete packet: header declares {declared_length + HEADER_LENGTH} bytes, "
+            f"got {len(data)}"
         )
 
     if len(data) < MIN_STATUS_LENGTH:
@@ -78,6 +85,7 @@ def decode_status(data: bytes) -> StatusPacket:
             is_partial=is_partial,
             packet_format=packet_format,
             packet_type=packet_type,
+            declared_length=declared_length,
             anomalies=tuple(anomalies),
         )
 
@@ -99,15 +107,22 @@ def decode_status(data: bytes) -> StatusPacket:
     max_temp_c = _decode_temp(data, Offset.MAX_TEMP, "max bound", anomalies, strict=False)
 
     # ── Mode ────────────────────────────────────────────────────────────────────────────
-    # ❓ CONTESTED (RL-003): the MQTT bridge reads mode at [13]/[14] instead. We follow
-    # ESPHome's [9] and keep the raw byte so an unknown value is visible rather than lost.
+    # ✅ Byte 9 IS the mode (RL-003 resolved). But the status enum is NOT the command enum:
+    # our unit read 0x04 while cooling, which the command table calls "turbo" (RL-012).
+    # Only COOL is verified, so anything else decodes to None with an anomaly rather than
+    # to a guess. A plausible-looking wrong mode is worse than an admitted unknown on a
+    # device that makes heat.
     mode_raw = _u8(data, Offset.MODE)
-    mode: Mode | None = None
+    mode: StatusMode | None = None
     if mode_raw is not None:
         try:
-            mode = Mode(mode_raw)
+            mode = StatusMode(mode_raw)
         except ValueError:
-            anomalies.append(f"unknown mode byte 0x{mode_raw:02x} at offset {int(Offset.MODE)}")
+            anomalies.append(
+                f"status mode 0x{mode_raw:02x} not yet verified. Only COOL (0x04) is known. "
+                f"Set this mode in the vendor app and capture it to identify the value "
+                f"(RL-012) — do NOT assume the command-mode table applies here."
+            )
 
     # ── Fan ─────────────────────────────────────────────────────────────────────────────
     fan_step = _u8(data, Offset.FAN_STEP)
@@ -129,6 +144,7 @@ def decode_status(data: bytes) -> StatusPacket:
         is_partial=is_partial,
         packet_format=packet_format,
         packet_type=packet_type,
+        declared_length=declared_length,
         time_remaining_s=time_remaining_s,
         actual_temp_c=actual_temp_c,
         target_temp_c=target_temp_c,
@@ -179,10 +195,9 @@ def _decode_temp(
 def reassemble(first: bytes, remainder: bytes) -> bytes:
     """Join a partial notification with the follow-up read.
 
-    📖 UPSTREAM, unverified: ESPHome documents that a status notification flagged partial
-    must be completed by an explicit read of the status characteristic. Whether the
-    remainder repeats the header is **not known** — this implementation assumes it does not.
-    The first real capture settles it, and until then this function is a hypothesis with a
-    test, not a fact.
+    ✅ VERIFIED (RL-012): our first capture arrived as a notification plus a follow-up read
+    and reassembled to **exactly** the length its own header declared (27 payload + 4 header
+    = 31 bytes received). The remainder continues the packet and does **not** repeat the
+    header — the assumption held, and the length byte proves it rather than us hoping.
     """
     return bytes(first) + bytes(remainder)

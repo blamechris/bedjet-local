@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from ..protocol.constants import Mode, c_to_f
+from ..protocol.constants import StatusMode, c_to_f
 from ..protocol.packets import StatusPacket
 
 
@@ -37,7 +37,7 @@ class BedJetState:
 
     available: bool = False
     power: Power = Power.UNKNOWN
-    mode: Mode | None = None
+    mode: StatusMode | None = None
     target_temp_c: float | None = None
     actual_temp_c: float | None = None
     ambient_temp_c: float | None = None
@@ -50,9 +50,10 @@ class BedJetState:
 
     @classmethod
     def from_status(cls, packet: StatusPacket, *, available: bool = True) -> BedJetState:
-        power = Power.UNKNOWN
-        if packet.mode is not None:
-            power = Power.OFF if packet.mode is Mode.OFF else Power.ON
+        # Only COOL is a verified status mode, and it implies the unit is running. The
+        # standby/off value is not yet known (RL-012), so anything else stays UNKNOWN
+        # rather than being guessed at. Capturing the app's "off" state fills this in.
+        power = Power.ON if packet.mode is StatusMode.COOL else Power.UNKNOWN
 
         return cls(
             available=available,

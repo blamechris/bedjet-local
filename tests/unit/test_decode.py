@@ -11,8 +11,9 @@ from __future__ import annotations
 import pytest
 
 from bedjet_local.protocol.constants import (
-    Mode,
+    HEADER_LENGTH,
     Offset,
+    StatusMode,
     c_to_f,
     fan_step_to_percent,
     temp_byte_to_c,
@@ -27,17 +28,17 @@ def build_status(
     seconds: int = 0,
     actual: int = 44,  # 22.0 C
     target: int = 50,  # 25.0 C
-    mode: int = Mode.HEAT,
+    mode: int = StatusMode.COOL,
     fan_step: int = 9,
     partial: int = 0,
-    length: int = 30,
+    length: int = 30 - HEADER_LENGTH,
     packet_format: int = 0x56,
     packet_type: int = 0x01,
     trailing: bytes = b"",
 ) -> bytes:
-    """Synthesise a status packet from the hypothesised layout."""
+    """Synthesise a status packet using the VERIFIED header layout (RL-004)."""
     data = bytearray(30)
-    data[Offset.LENGTH] = length
+    data[Offset.PAYLOAD_LENGTH] = length
     data[Offset.IS_PARTIAL] = partial
     data[Offset.PACKET_FORMAT] = packet_format
     data[Offset.PACKET_TYPE] = packet_type
@@ -93,11 +94,12 @@ def test_decodes_a_well_formed_packet() -> None:
     assert packet.is_plausible
     assert packet.actual_temp_c == 22.0
     assert packet.target_temp_c == 25.0
-    assert packet.mode is Mode.HEAT
+    assert packet.mode is StatusMode.COOL
     assert packet.fan_step == 9
     assert packet.fan_percent == 50
     assert packet.time_remaining_s == 1800
     assert not packet.is_partial
+    assert packet.is_complete
 
 
 def test_raw_and_header_are_always_retained() -> None:
@@ -147,11 +149,21 @@ def test_short_packet_still_reports_header() -> None:
     assert any("too short" in a for a in packet.anomalies)
 
 
-def test_unknown_mode_byte_is_preserved_and_flagged() -> None:
+def test_unverified_mode_byte_is_preserved_and_flagged() -> None:
+    """An unverified status mode must decode to None, never to a plausible guess."""
     packet = decode_status(build_status(mode=0x7F))
     assert packet.mode is None
     assert packet.mode_raw == 0x7F
-    assert any("unknown mode" in a for a in packet.anomalies)
+    assert any("not yet verified" in a for a in packet.anomalies)
+
+
+def test_command_mode_values_are_not_used_to_decode_status() -> None:
+    """RL-012: the two enums differ, and conflating them reported 'turbo' for a cooling unit.
+
+    0x03 is HEAT in the command table. It must NOT decode as a status mode.
+    """
+    packet = decode_status(build_status(mode=0x03))
+    assert packet.mode is None, "command-mode values must not leak into status decoding"
 
 
 def test_unexpected_packet_format_is_flagged() -> None:

@@ -34,72 +34,83 @@ approximation of the Celsius→Fahrenheit conversion applied to `b/2`; it is a *
 conversion, not a competing wire format. The wire format is `2 × °C`, corroborated by two
 independent implementations in different languages by different authors.
 **Confidence:** high
-**Provenance:** UPSTREAM — corroborated, **not observed on our device**
-**Fixture:** —
+**Provenance:** ✅ **VERIFIED 2026-08-16** (upgraded by RL-012: byte 8 = 0x30 = 48 → 24.0 °C =
+75.2 °F with the app's target set to **75 °F**. Confirmed against independent ground truth, not
+merely corroborated between upstreams.)
+**Fixture:** `tests/fixtures/cool_fan50_target75f.bin`
 **Next question:** Does our unit report in the same units, and does byte 27's flags field
 change the *reported* value or only the display on the remote? (Suspect display-only, but a
 firmware that reports °F on the wire would break the decoder silently.)
 
 ---
 
-## RL-002 — Fan-speed step base: `5 + 5×step` or `5×step`?
+## RL-002 — Fan-speed step base: `5 + 5×step` or `5×step`? ✅ RESOLVED
 
-**Date:** 2026-08-16 (opened, unresolved)
+**Date:** 2026-08-16 (opened and resolved same day)
 **Question:** ESPHome maps fan step → percent as `5 + 5 × step`; the MQTT bridge as
 `step × 5`. Both agree the field is at offset 10 and that the index range is 0–19.
 **Setup:** Not yet run. **Planned:** set the fan to a known percentage using the *physical
 remote* (no writes from us), capture the status packet, read byte 10.
-**Observation:** —
+**Observation:** ✅ **RESOLVED by RL-012.** With the vendor app set to **50 %**, byte 10 read
+`0x09` (step 9). ESPHome's `5 + 5 × step` gives 50 ✓. The bridge's `5 × step` gives 45 ✗.
+**Interpretation:** ESPHome is correct; the MQTT bridge's mapping is off by one step. Prior
+reasoning below was right for the right reason.
 **Interpretation (prior):** ESPHome's mapping is self-consistent with a 0–19 range
 (0 → 5 %, 19 → 100 %); the bridge's would require step 20 to reach 100 %, which is outside the
 documented range. Weak prior favouring ESPHome.
-**Confidence:** low
-**Provenance:** HYPOTHESIS
-**Fixture:** — (will be `fan_<pct>_percent.bin`)
+**Confidence:** high
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** `tests/fixtures/cool_fan50_target75f.bin`
 **Next question:** Is the step range actually 0–19, or is 0 a distinct "fan off" rather than
 5 %?
 
 ---
 
-## RL-003 — Mode byte location
+## RL-003 — Mode byte location ✅ RESOLVED (with a twist — see RL-012)
 
-**Date:** 2026-08-16 (opened, unresolved)
+**Date:** 2026-08-16 (opened and resolved same day)
 **Question:** ESPHome decodes mode at offset `[9]`. The MQTT bridge uses `[13]`/`[14]`, which
 ESPHome documents as temperature bounds. Both cannot be describing the same layout.
 **Setup:** Not yet run. **Planned:** cycle the unit through off → fan → cool → heat using the
 physical remote only, capturing a status packet in each state, then diff the packets.
-**Observation:** —
+**Observation:** ✅ **RESOLVED by RL-012.** Byte 9 IS the mode. But it read `0x04` while the
+unit was **cooling**, and `0x04` is *turbo* in the command table — so the status enum is a
+**different enum from the command enum**. Byte 13 (`0x26` → 66.2 °F) does look like the minimum
+temperature bound, consistent with ESPHome rather than the bridge.
 **Interpretation (prior):** `[9]` is the mode; `[13..14]` may disambiguate variants that share
 a mode value (heat vs extended heat vs turbo), which the bridge may have latched onto because
 it produced correct results for the modes it tested. Untested.
-**Confidence:** low
-**Provenance:** HYPOTHESIS
-**Fixture:** — (will be `mode_<name>_status.bin` per mode)
+**Confidence:** high for the location; the value table is barely started (only COOL verified)
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** `tests/fixtures/cool_fan50_target75f.bin`
 **Next question:** A packet diff across modes will also reveal which of bytes 19–25 move — the
 cheapest way to attack the unknown region without sending a single write.
 
 ---
 
-## RL-004 — Status packet header layout
+## RL-004 — Status packet header layout ✅ SOLVED
 
-**Date:** 2026-08-16 (opened, unresolved)
+**Date:** 2026-08-16 (opened and solved same day)
 **Question:** Upstream documents a 4-byte header carrying packet format, packet type, length and
 a partial flag — but **not their order within bytes 0–3**. Which byte is which?
 **Setup:** Not yet run. **Planned:** capture any status packet and look for `0x56`
 (`PACKET_FORMAT_V3_HOME`) and `0x01` (`PACKET_TYPE_STATUS`) in the first four bytes; the length
 byte should approximately equal the packet size.
-**Observation:** —
+**Observation:** ✅ **SOLVED by RL-012.** Header is `01 56 1b 01`:
+`[0]` partial flag, `[1]` format `0x56`, `[2]` **payload length** (`0x1b` = 27), `[3]` type
+`0x01`. Proof: 27 + 4 = 31 = the exact size of the reassembled packet.
+**Interpretation:** Our guess had the fields in the wrong order. Retaining the raw header meant
+one capture corrected it without invalidating anything — the design worked as intended.
 **Interpretation (prior):** We have shipped a guess — `[0]` length, `[1]` partial, `[2]` format,
 `[3]` type — chosen so the decoder can run at all. It is **flagged, not trusted**:
 `decode_status` raises an anomaly when byte 2 is neither `0x56` nor `0x05`, and
 `StatusPacket.header` always retains the raw four bytes, so one capture can correct the
 interpretation without invalidating the fixture.
-**Confidence:** low
-**Provenance:** HYPOTHESIS
-**Fixture:** —
-**Next question:** Does the follow-up read that completes a partial packet repeat the header, or
-continue from where the notification stopped? `reassemble()` currently assumes it does not
-repeat — a second untested guess riding on this one.
+**Confidence:** high
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** `tests/fixtures/cool_fan50_target75f.bin`
+**Next question:** ✅ Answered too — the remainder continues the packet and does **not** repeat
+the header. The reassembled length matches the declared length exactly.
 
 ---
 
@@ -167,7 +178,11 @@ Any BedJet within radio range is indistinguishable from ours by advertisement al
 ordering would have picked the right one here only by luck. Identification required a physical
 act (cutting power) that only the owner could perform. Expect to need an equivalent for the
 next physical device rather than assuming discovery yields identity.
-**Confidence:** ~~high~~ → **medium, downgraded 2026-08-16 by RL-008.** The original wording
+**Confidence:** ✅ **high — CONFIRMED 2026-08-16 by RL-012**, which settles it independently
+of any scan behaviour: the unit reported back the exact state we set in our own app. The
+downgrade note below is kept because the reasoning error it records was real.
+
+~~medium, downgraded 2026-08-16 by RL-008.~~ The original wording
 here ("about as unambiguous as a test gets") was overstated. It assumed a scan is a complete
 census of what is in range. RL-008 shows it is not: our own unit was absent from a scan one
 minute before it connected successfully. Two correlated observations (vanished on unplug,
@@ -448,3 +463,82 @@ heater.
 
 Two states at different fan percentages settle RL-002; two at different modes settle RL-003;
 every capture contributes to RL-004.
+
+---
+
+## RL-012 — First real packet: four questions closed, one new one opened
+
+**Date:** 2026-08-16
+**Question:** Does the decoder read a real status packet correctly, and what do the contested
+bytes actually contain?
+**Setup:** Vendor app set to **Cool, fan 50 %, target 75 °F**, written down first, then
+force-closed to release the link. `bedjet watch <ours> --raw --seconds 60 --save`. 55
+notifications over ~60 s. Fixture: `tests/fixtures/cool_fan50_target75f.bin`.
+**Observation:**
+
+```
+      [0]  [1]  [2]  [3]  [4]  [5]  [6]  [7]  [8]  [9] [10] ...
+      01   56   1b   01   09   3b   19   2d   30   04   09  ...  (31 bytes)
+```
+
+**Interpretation — four open questions closed at once:**
+
+**✅ RL-004, the header, is SOLVED — and our guess was wrong.** Actual layout is
+`[0]` partial flag, `[1]` format `0x56`, `[2]` **payload length**, `[3]` type `0x01`. We had
+guessed length/partial/format/type. The proof is arithmetic the device asserts about itself:
+`0x1b` = 27 payload bytes + 4 header = **31**, exactly the size received. This is why the raw
+header was always retained — one capture corrected the interpretation without invalidating
+anything.
+
+**✅ RL-001, temperature, VERIFIED on our device.** Byte 8 = `0x30` = 48 → 24.0 °C → 75.2 °F,
+against a target of **75 °F** set in the app. `2 × °C` confirmed against independent ground
+truth, not just against two agreeing upstreams.
+
+**✅ RL-002, fan scaling, SETTLED.** Byte 10 = `0x09` = step 9, with the app set to **50 %**.
+ESPHome's `5 + 5 × step` → 50 ✓. The MQTT bridge's `5 × step` → 45 ✗. ESPHome is right.
+
+**✅ RL-003, mode location, RESOLVED — with a twist that matters.** Byte 9 *is* the mode, as
+ESPHome says. But byte 9 read `0x04` while the unit was **cooling**, and `0x04` is **turbo** in
+the command table — so our first run cheerfully displayed `mode=turbo` for a unit that was
+cooling. **The status enum and the command enum are different enums.** Every upstream command
+table circulating for this device describes what you *send*, not what you *read*, and nothing
+we found says so.
+
+This is the most consequential finding yet, because it is the kind that stays silent: the wrong
+mode decodes without an error, looks reasonable, and would have propagated into the device
+model, the API, and eventually Jarvis. Only ground truth caught it.
+
+Consequence: `StatusMode` now contains **only** `COOL = 0x04`. Anything else decodes to `None`
+with an anomaly rather than to a guess, and `Power` stays `UNKNOWN` unless the mode is verified.
+A plausible-looking wrong mode is worse than an admitted unknown on a device that makes heat.
+
+**✅ The partial-packet mechanism is real, and completeness is now decided properly.** The
+capture arrived as a notification plus a follow-up read and reassembled to exactly the declared
+length. But our reader keyed off the partial *flag*, which is set on the first fragment and
+therefore **stays set after reassembly** — and our own flag detection was accidentally reading
+byte 1 (`0x56`, truthy) rather than byte 0. Both are fixed: completeness is now
+`len(raw) >= declared_length + 4`. A length the device asserts about itself beats a flag we half
+understand.
+
+**✅ RL-006, ownership, CONFIRMED.** The unit reported back exactly the state we set in our own
+app. No inference from scan behaviour required. Upgraded from medium to high.
+
+**Also observed, unresolved:**
+
+- Byte 13 = `0x26` → 19.0 °C → 66.2 °F, matching the documented **minimum** target. Consistent
+  with upstream's "temperature bounds", ❓ unconfirmed.
+- Byte 14 = `0x34` → 26.0 °C → 78.8 °F. If this is a maximum bound it is **not** the documented
+  104 °F — possibly a Cool-mode-specific limit. ❓
+- **The packet is 31 bytes; upstream's layout ends at byte 29.** Byte 30 = `0x31` is
+  unaccounted for by any public source.
+- Bytes 19–25 (`12 01 9a 01 10 ff 00`) remain opaque.
+- Still no firmware version anywhere.
+
+**Confidence:** high
+**Provenance:** ✅ VERIFIED (our device, against pre-recorded ground truth)
+**Fixture:** `tests/fixtures/cool_fan50_target75f.bin` — 11 assertions in
+`tests/unit/test_real_fixtures.py`
+**Next question:** capture **one state per mode** from the app — off/standby first, then heat,
+dry, turbo — and diff. Each fills one row of `StatusMode` and lights up part of bytes 19–25 and
+27. The off capture is the most valuable single one: it names the standby value, which is what
+`Power` needs to stop saying UNKNOWN.

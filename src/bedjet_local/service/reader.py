@@ -54,9 +54,17 @@ class StatusReader:
         self.packets_seen += 1
         packet = decode_status(data)
 
-        if packet.is_partial:
+        # Completeness is decided by the header's own length byte, not by the partial flag
+        # (RL-012). The flag stays set on a reassembled packet because it comes from the
+        # first fragment, so keying off it would loop; and a length the device asserts
+        # about itself is better evidence than a flag we only half understand.
+        if not packet.is_complete:
             self.partials_seen += 1
-            log.info("partial packet (%d bytes) — fetching remainder", len(data))
+            log.info(
+                "incomplete packet (%d of %s bytes) — fetching remainder",
+                len(data),
+                packet.expected_total,
+            )
             self._pending_partial = data
             if self._loop is not None:
                 self._loop.create_task(self._complete_partial(data))

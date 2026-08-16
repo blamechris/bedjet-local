@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .constants import Mode
+from .constants import HEADER_LENGTH, StatusMode
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,20 +29,30 @@ class StatusPacket:
     it raw means a capture can correct our interpretation without a re-capture."""
 
     is_partial: bool = False
-    """Upstream reports the V3 status packet exceeds the notification MTU and arrives in
-    two parts, the first flagged partial and the remainder fetched by an explicit read.
-    📖 UPSTREAM — unverified on our device."""
+    """Byte 0 of the header. ✅ VERIFIED that the split-packet mechanism is real: our first
+    capture arrived as a notification plus a follow-up read and reassembled to exactly the
+    length the header declared.
+
+    **Not load-bearing.** After reassembly this flag still reads from the first fragment,
+    so it stays set on a complete packet. Use :attr:`is_complete`, which compares the
+    declared length against what we actually have."""
 
     packet_format: int | None = None
     packet_type: int | None = None
+
+    declared_length: int | None = None
+    """Header byte 2: payload bytes following the 4-byte header. ✅ VERIFIED (RL-004) —
+    ``27 + 4 == 31``, the exact size of the reassembled capture. This is the authority on
+    whether a packet is whole."""
 
     time_remaining_s: int | None = None
     actual_temp_c: float | None = None
     target_temp_c: float | None = None
     ambient_temp_c: float | None = None
-    mode: Mode | None = None
+    mode: StatusMode | None = None
     mode_raw: int | None = None
-    """The raw mode byte, kept even when it maps to no known :class:`Mode`."""
+    """The raw mode byte, kept even when it maps to no known :class:`StatusMode` — which is
+    most of the time, since only ``COOL`` has been verified so far."""
     fan_step: int | None = None
     fan_percent: int | None = None
 
@@ -62,6 +72,25 @@ class StatusPacket:
     anomalies: tuple[str, ...] = field(default_factory=tuple)
     """Everything that did not look as expected. Never empty-by-suppression: if a value is
     outside its documented range we surface it, we do not silently clamp an observation."""
+
+    @property
+    def expected_total(self) -> int | None:
+        """Full packet size the header declares, header included."""
+        if self.declared_length is None:
+            return None
+        return self.declared_length + HEADER_LENGTH
+
+    @property
+    def is_complete(self) -> bool:
+        """Whether we hold the whole packet.
+
+        The length byte decides this, not the partial flag. A flag we half understand is a
+        worse authority than an arithmetic identity the device itself asserts.
+        """
+        total = self.expected_total
+        if total is None:
+            return False
+        return len(self.raw) >= total
 
     @property
     def is_plausible(self) -> bool:
