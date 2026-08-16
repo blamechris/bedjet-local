@@ -100,3 +100,68 @@ interpretation without invalidating the fixture.
 **Next question:** Does the follow-up read that completes a partial packet repeat the header, or
 continue from where the notification stopped? `reassemble()` currently assumes it does not
 repeat — a second untested guess riding on this one.
+
+---
+
+## RL-005 — First contact: discovery on macOS
+
+**Date:** 2026-08-16
+**Question:** Is our device discoverable over BLE, does it advertise the service UUID the
+upstream sources document, and what identity does the advertisement carry?
+**Setup:** `uv run bedjet discover` (10 s scan) on macOS Darwin 25.5, MacBook Pro, single
+scan position, vendor app not connected. Bluetooth permission granted to the terminal.
+**Observation:** Two devices found, **both** named `BEDJET_V3`, both advertising service
+`00001000-bed0-0080-aa55-4265644a6574` and nothing else. No manufacturer data on either.
+Addresses were CoreBluetooth UUIDs (`947CDF5E-…`, `9713FDE6-…`), not MAC addresses. RSSI
+−75 dBm and −95 dBm.
+**Interpretation:** Four upstream claims are now confirmed on our hardware:
+
+1. The BedJet service UUID is correct and is **advertised**, not merely present after
+   connecting — so discovery can filter on it, which the scanner already does.
+2. Our unit is a **V3** (BLE), not a V2 (Bluetooth Classic SPP). The whole approach holds.
+3. macOS returns a CoreBluetooth UUID rather than a MAC, exactly as ADR-0001 predicted.
+   Confirmed: **addresses are host-local** and config must never assume a MAC. An address
+   recorded here will not resolve on a Pi.
+4. The advertisement carries **no manufacturer data and no per-unit identity** — same name,
+   same service UUID for both units. Identity has to come from after the connection.
+
+Two units is the unexpected result, and it is not self-evidently good news — see RL-006.
+RSSI is also weaker than hoped: −75 dBm is workable but not comfortable, and −95 dBm is at
+the edge of usability. Neither reading was taken from a known position, so neither is yet
+evidence about siting.
+**Confidence:** high
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** — (advertising data only; no packet captured)
+**Next question:** RL-006, and then: does the device-name characteristic hold a user-settable
+name that could distinguish units after connecting?
+
+---
+
+## RL-006 — Which of the two `BEDJET_V3` units is ours? (BLOCKING)
+
+**Date:** 2026-08-16 (opened, unresolved — **blocks all connection attempts**)
+**Question:** Two BedJet V3s are in range. Are both ours (e.g. a dual-zone setup), or is one
+a neighbour's?
+**Setup:** Not yet run. Two discriminating tests, in preference order:
+
+- **Power test (definitive).** Unplug our BedJet at the wall, re-scan, and note which address
+  disappears. Plug back in, re-scan, confirm it returns. This identifies our unit by an
+  action only its owner can take, and needs no connection.
+- **Proximity test (weaker).** Scan from directly beside our unit, then from two rooms away.
+  Ours should swing sharply; a neighbour's should not. Suggestive, not conclusive — RSSI is
+  not identity.
+
+**Observation:** —
+**Interpretation (prior):** −95 dBm is roughly what a BLE device reads through a wall or two,
+which is consistent with a neighbour's unit — and equally consistent with our own unit under a
+mattress at the far end of the house. The reading does not decide it.
+**Confidence:** —
+**Provenance:** HYPOTHESIS
+**Fixture:** —
+**Why this blocks:** connecting to a BedJet takes its single BLE connection slot. Doing that to
+a device that is not ours would knock a stranger's app off their own heater, and is not ours to
+do. It is also self-defeating for the project: a protocol fixture captured from an unknown unit
+with unknown firmware is worthless as evidence, which is the whole point of `PROVENANCE.md`.
+**Next question:** If both units are ours, the device layer needs multi-device addressing from
+the start rather than as a retrofit — and since the advertisement carries no per-unit identity,
+we will need our own stable mapping from a host-local address to a human name ("left", "right").

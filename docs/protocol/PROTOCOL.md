@@ -15,28 +15,41 @@ by a fixture captured from our BedJet and a test that asserts against it. Silent
 upstream behaviour into a claim about our hardware is the specific failure this document
 exists to prevent.
 
-**Current state: every row below is 📖 or ❓. We have not yet connected to the device.**
+**Current state: bring-up steps 1–3 (discovery) are complete. Advertising-layer rows below are
+✅ VERIFIED. Everything requiring a connection is still 📖 or ❓ — we have not yet connected.**
 
 ---
 
 ## Device identity
 
+Observed 2026-08-16 via `bedjet discover` on macOS (Darwin 25.5), scan from a single position.
+See [RL-005](../research/RESEARCH-LOG.md).
+
 | Property | Value | Provenance | Confidence |
 |---|---|---|---|
-| Our model | BedJet 3 | ❓ owner-reported, unverified | medium |
-| Our firmware/hw rev | "v1.2.0" — may be app version, firmware, or hardware rev | ❓ ambiguous, must read from device | low |
-| Advertised name | unknown | ❓ | — |
-| Advertised service UUIDs | unknown | ❓ | — |
-| Address form | MAC on Linux; **system-assigned UUID on macOS** (CoreBluetooth hides MACs) | 📖 bleak docs | medium |
+| Our model | **BedJet V3** — advertises the BedJet service UUID | ✅ VERIFIED 2026-08-16 | high |
+| Advertised name | **`BEDJET_V3`** (both units) | ✅ VERIFIED 2026-08-16 | high |
+| Advertised service UUIDs | `00001000-bed0-0080-aa55-4265644a6574` only | ✅ VERIFIED 2026-08-16 | high |
+| Manufacturer data | **none present** in the advertisement | ✅ VERIFIED 2026-08-16 | high |
+| Address form | CoreBluetooth UUID on macOS, as predicted; **not** a MAC | ✅ VERIFIED 2026-08-16 | high |
+| **Units visible** | **two**, both `BEDJET_V3`, at −75 dBm and −95 dBm | ✅ VERIFIED 2026-08-16 | high |
+| Our firmware/hw rev | "v1.2.0" — still unresolved; not present in the advertisement | ❓ must read after connecting | low |
 
-> Bring-up steps 1–6 exist to fill this table in. Until they do, our own device is the least
-> documented thing in this repository.
+**The advertisement carries no distinguishing information.** Same name, same service UUID, no
+manufacturer data, and a host-local address that means nothing on another machine. RSSI is the
+*only* thing separating the two units, and RSSI is not identity — it moves with position,
+posture, and what is between the radio and the device. Anything that needs to tell one BedJet
+from another has to do it after connecting, or by a physical test (RL-006).
+
+> ⚠️ **Ownership is not established.** Two units are visible; it is not yet known whether both
+> are ours. A BedJet is a BLE device in a bedroom, and bedrooms have neighbours. See
+> [RL-006](../research/RESEARCH-LOG.md) — no connection attempt until this is settled.
 
 ## GATT layout
 
 | UUID | Role | Properties | Provenance | Confidence |
 |---|---|---|---|---|
-| `00001000-bed0-0080-aa55-4265644a6574` | Service | — | 📖 ESPHome | high |
+| `00001000-bed0-0080-aa55-4265644a6574` | Service | — | ✅ VERIFIED 2026-08-16 — advertised by our unit | high |
 | `00002000-bed0-0080-aa55-4265644a6574` | Status | notify + read | 📖 ESPHome + MQTT bridge (independent agreement) | high |
 | `00002001-bed0-0080-aa55-4265644a6574` | Device name | read | 📖 both | high |
 | `00002004-bed0-0080-aa55-4265644a6574` | Command | write | 📖 both | high |
