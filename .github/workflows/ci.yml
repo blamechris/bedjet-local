@@ -1,0 +1,37 @@
+name: CI
+
+# CI runs unit + integration tests only. It has no Bluetooth adapter and no BedJet,
+# and must never attempt to reach one — hardware tests are deselected by the
+# `addopts` in pyproject.toml and are additionally not on any path invoked here.
+# See AGENTS.md rule 4.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    name: Tests (no hardware)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --extra dev
+      - name: Unit + integration tests
+        run: uv run pytest tests/unit tests/integration -v
+
+  lint:
+    name: Lint & types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --extra dev
+      - run: uv run ruff check src tests
+      - run: uv run ruff format --check src tests
+      - run: uv run mypy

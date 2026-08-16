@@ -1,0 +1,37 @@
+bedjet-local
+Copyright (c) 2026 Chris Bowen
+Licensed under the MIT License (see LICENSE).
+
+--------------------------------------------------------------------------------
+Protocol knowledge attribution
+--------------------------------------------------------------------------------
+
+No third-party code is included in this repository. The BedJet BLE protocol is
+undocumented by its manufacturer, and this project's understanding of it builds on
+prior reverse-engineering work by others. That work deserves credit even where no
+code was taken from it.
+
+  * The ESPHome project — esphome/components/bedjet
+    https://github.com/esphome/esphome
+    The most complete public description of the BedJet V3 status packet, the
+    partial-packet/follow-up-read behaviour, notification semantics, and the
+    fan-step and temperature encodings.
+    ESPHome's C++ sources are GPLv3. No ESPHome code is used, copied, or ported
+    here; it was read as technical evidence only. See docs/decisions/ADR-0003.
+
+  * pjt0620 — Home-Assistant-Bedjet (GPL-3.0)
+    https://github.com/pjt0620/Home-Assistant-Bedjet
+    Independent corroboration of the GATT layout, and the command opcode and mode
+    value tables. No code used or ported.
+
+  * markus1189 — bedjet-re (no licence granted)
+    https://github.com/markus1189/bedjet-re
+    Documentation of the Biorhythm sequence format and the fragment-transfer
+    protocol on characteristic 2005. Referenced as documentation only; nothing
+    from it is reproduced here.
+
+  * asheliahut/ha-bedjet, robert-friedland/ha-bedjet, blueharford/ha-bedjet-v3 (MIT)
+    Home Assistant custom integrations consulted during the ecosystem survey.
+
+Per-field provenance and confidence for everything this project believes about the
+protocol is recorded in docs/protocol/PROTOCOL.md.

@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.venv/
+uv.lock
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+.DS_Store
+
+# Session ledgers (fleet convention: repo root, gitignored)
+autonomous-session-*.md
+
+# Raw capture output. Promote deliberately into tests/fixtures/ with provenance
+# recorded in tests/fixtures/PROVENANCE.md — never bulk-commit a capture session.
+captures/
+*.pcap
+*.pcapng
+*.btsnoop

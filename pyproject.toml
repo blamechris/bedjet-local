@@ -1,0 +1,55 @@
+[project]
+name = "bedjet-local"
+version = "0.1.0"
+description = "Local BLE control of a BedJet 3, behind a clean device abstraction"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+    "bleak>=1.0",
+    "bleak-retry-connector>=4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+# Transport via an ESPHome Bluetooth Proxy (ADR-0001 Phase 3, option B).
+# Not installed by default; the transport abstraction is what makes it optional.
+esphome-proxy = ["bleak-esphome>=3.0"]
+
+[project.scripts]
+bedjet = "bedjet_local.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bedjet_local"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "hardware: requires a real BedJet and a human present. Deselected by default; run with `make test-hardware`.",
+]
+# THE CI GATE: hardware tests are deselected unless explicitly asked for.
+# Do not remove this. CI has no Bluetooth adapter and no BedJet, and must never
+# attempt to reach one. See AGENTS.md rule 4.
+addopts = "-m 'not hardware' --strict-markers"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
