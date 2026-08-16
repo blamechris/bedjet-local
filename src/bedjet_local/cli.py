@@ -33,6 +33,12 @@ def _setup_logging(debug: bool) -> None:
     )
 
 
+def _short(address: str, known: dict[str, registry.KnownDevice]) -> str:
+    """A short, unambiguous label for one device: its registry name, or an address stub."""
+    entry = known.get(address.lower())
+    return entry.label if entry is not None else f"{address.split('-')[0]}…"
+
+
 async def cmd_discover(args: argparse.Namespace) -> int:
     """Bring-up steps 1-3: discover, identify, inspect advertising data.
 
@@ -53,7 +59,12 @@ async def cmd_discover(args: argparse.Namespace) -> int:
         for device in devices:
             seen.setdefault(device.address.lower(), []).append(device)
         if args.repeat > 1:
-            summary = ", ".join(f"{d.name or '?'} {d.rssi}dBm" for d in devices) or "nothing"
+            # Label each reading with WHICH device it came from. Results are sorted by
+            # RSSI, so two same-named units swap positions between rounds — an unlabelled
+            # list reads as if one device's readings belonged to the other (RL-010).
+            summary = (
+                ", ".join(f"{_short(d.address, known)} {d.rssi}dBm" for d in devices) or "nothing"
+            )
             print(f"  → {summary}")
             if index + 1 < args.repeat:
                 await asyncio.sleep(args.interval)
@@ -76,8 +87,22 @@ async def cmd_discover(args: argparse.Namespace) -> int:
         print(f"  {latest.describe()}")
         if args.repeat > 1:
             rssis = [d.rssi for d in samples if d.rssi is not None]
-            span = f"{min(rssis)}..{max(rssis)} dBm" if rssis else "rssi unknown"
-            print(f"      seen in {len(samples)}/{args.repeat} scans, {span}")
+            if rssis:
+                spread = max(rssis) - min(rssis)
+                print(
+                    f"      seen in {len(samples)}/{args.repeat} scans, "
+                    f"{min(rssis)}..{max(rssis)} dBm (spread {spread} dB)"
+                )
+                # 10 dB is a 10x power swing. Beyond that the link is fading badly enough
+                # that a connect attempt can land in a null and fail as "not found"
+                # (RL-009/RL-010) — which looks like a dead device, not a weak one.
+                if spread >= 10:
+                    print(
+                        f"      ⚠️  {spread} dB swing while stationary — marginal link. "
+                        "Connects may fail intermittently."
+                    )
+            else:
+                print(f"      seen in {len(samples)}/{args.repeat} scans, rssi unknown")
         if latest.service_uuids:
             print(f"      services: {', '.join(latest.service_uuids)}")
         for company_id, payload in latest.manufacturer_data:

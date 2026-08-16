@@ -327,3 +327,69 @@ and the registry design changes.
 "seen in K/N scans" with an RSSI span, and warns when a *registered* device is absent from all
 of them. It also gives ADR-0001's Phase 2 siting survey the many-samples basis RL-008 says it
 needs.
+
+**UPDATE 2026-08-16, largely resolved by RL-010.** A 5-round survey found our unit in **5/5
+scans under the same address**, `947CDF5E…`. Two of the four candidate causes are now dead:
+
+- ❌ **BLE address rotation — ruled out.** The address came back unchanged. Address-keyed
+  identity is safe on macOS after all, and the registry design stands.
+- ❌ **Power loss / deep idle — ruled out.** Nothing was power-cycled between the failure and
+  the survey; the unit recovered on its own.
+- ✅ **Marginal link — now the leading explanation.** RL-010 measured a **22 dB swing** on our
+  unit while stationary, with a floor of −95 dBm. A connect attempt landing in a fade fails
+  exactly as observed: bleak cannot resolve the address, and reports "device not found" — a
+  weak link is indistinguishable from a dead device at that layer.
+- ➖ **A client holding the link** remains possible and untestable after the fact.
+
+The lesson worth keeping: **"not found" on a marginal link is the expected failure mode, not an
+anomaly.** Intermittent connect failures at this signal level should be retried, not diagnosed.
+
+---
+
+## RL-010 — Our unit's signal swings 22 dB while stationary
+
+**Date:** 2026-08-16
+**Question:** How stable is the radio link to our BedJet from the working position, and is the
+location good enough to run a daemon from?
+**Setup:** `bedjet discover --repeat 5` — five 10 s scans, 5 s apart, laptop stationary.
+**Observation:**
+
+| Device | Seen | RSSI range | Spread |
+|---|---|---|---|
+| ours (`947CDF5E…`) | 5/5 | −95 … −73 dBm | **22 dB** |
+| the other unit | 5/5 | −86 … −80 dBm | 6 dB |
+
+**Interpretation:** Both units advertise reliably — presence is not the problem. **Signal
+stability is.** A 22 dB spread is a ~160× swing in received power, on a stationary laptop, over
+about a minute. −73 dBm is comfortable; −95 dBm is at the edge of usability. Our link crosses
+that whole range repeatedly.
+
+The inversion is the interesting part: the **nearer** unit is four times more variable than the
+**further** one. That points at a multipath/obstruction problem rather than distance — a BedJet
+sits low, under or beside a bed, with a metal frame, a mattress and a moving human in the path.
+The other unit's steadier signal suggests a cleaner path, probably through a single wall with
+nothing moving in it.
+
+Consequences:
+
+1. **RL-009's failure is explained** without invoking address rotation or a phantom client.
+2. **Retry logic is not optional.** `bleak-retry-connector` is already a dependency
+   (ADR-0002) and must be wired into the transport before any daemon runs unattended.
+3. **This position is not a deployment site.** It is fine for bring-up, where a human retries.
+   It is not fine for something expected to hold a link overnight.
+4. **ADR-0001's Phase 2 siting survey now has a metric**: not "what is the RSSI" but "what is
+   the *spread*, and how often does it dip below −90". `discover --repeat` reports both and
+   warns at ≥10 dB.
+**Confidence:** high
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** —
+**Also fixed here — a reporting bug of ours.** The per-round output printed
+`BEDJET_V3 -74dBm, BEDJET_V3 -85dBm` with no indication of *which* device each reading belonged
+to. Results are sorted by RSSI, so when the two units cross over the columns swap silently, and
+the rounds read as though one device's numbers were the other's. Reconstructing which was which
+required working backwards from the aggregate spans. Per-round readings are now labelled by
+registry name or address stub. A display that quietly attributes one device's measurements to
+another is worse than no display in a project whose entire discipline is provenance.
+**Next question:** Does the link hold well enough *while connected* to sustain a notification
+stream, or does it drop mid-session? Connected-mode behaviour is a different question from
+advertising visibility, and `watch` answers it directly.
