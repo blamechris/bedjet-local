@@ -1,5 +1,6 @@
-"""Device model: state and capabilities, free of protocol detail."""
+"""Device model: state, capabilities, and which units are ours."""
 
+from . import registry
 from .state import BedJetState, Power
 
-__all__ = ["BedJetState", "Power"]
+__all__ = ["BedJetState", "Power", "registry"]

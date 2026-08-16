@@ -112,8 +112,11 @@ upstream sources document, and what identity does the advertisement carry?
 scan position, vendor app not connected. Bluetooth permission granted to the terminal.
 **Observation:** Two devices found, **both** named `BEDJET_V3`, both advertising service
 `00001000-bed0-0080-aa55-4265644a6574` and nothing else. No manufacturer data on either.
-Addresses were CoreBluetooth UUIDs (`947CDF5E-…`, `9713FDE6-…`), not MAC addresses. RSSI
-−75 dBm and −95 dBm.
+Addresses were CoreBluetooth UUIDs, not MAC addresses. RSSI −75 dBm and −95 dBm.
+
+(Addresses are not recorded here. They are host-local, meaningless on another machine, and one
+of the two units turned out not to be ours — see RL-006. Ours lives in the gitignored device
+registry; the other is nobody's business but its owner's.)
 **Interpretation:** Four upstream claims are now confirmed on our hardware:
 
 1. The BedJet service UUID is correct and is **advertised**, not merely present after
@@ -137,9 +140,9 @@ name that could distinguish units after connecting?
 
 ---
 
-## RL-006 — Which of the two `BEDJET_V3` units is ours? (BLOCKING)
+## RL-006 — Which of the two `BEDJET_V3` units is ours? ✅ RESOLVED
 
-**Date:** 2026-08-16 (opened, unresolved — **blocks all connection attempts**)
+**Date:** 2026-08-16 (opened and resolved same day)
 **Question:** Two BedJet V3s are in range. Are both ours (e.g. a dual-zone setup), or is one
 a neighbour's?
 **Setup:** Not yet run. Two discriminating tests, in preference order:
@@ -151,17 +154,26 @@ a neighbour's?
   Ours should swing sharply; a neighbour's should not. Suggestive, not conclusive — RSSI is
   not identity.
 
-**Observation:** —
-**Interpretation (prior):** −95 dBm is roughly what a BLE device reads through a wall or two,
-which is consistent with a neighbour's unit — and equally consistent with our own unit under a
-mattress at the far end of the house. The reading does not decide it.
-**Confidence:** —
-**Provenance:** HYPOTHESIS
+**Observation:** The power test was run. With our BedJet unplugged at the wall, the −74/−75 dBm
+unit **disappeared from the scan** and the −95 dBm unit remained. On restoring power it
+returned, still around −74 dBm.
+**Interpretation:** The stronger unit is ours. **The −95 dBm unit is not ours** — almost
+certainly a neighbour's, and it must never be connected to. We own exactly one BedJet, so the
+device layer does not need multi-device addressing yet.
+
+The wider lesson is the one worth carrying to the next device: **this device class advertises
+no identity at all.** Same name, same service UUID, no manufacturer data, a host-local address.
+Any BedJet within radio range is indistinguishable from ours by advertisement alone, and RSSI
+ordering would have picked the right one here only by luck. Identification required a physical
+act (cutting power) that only the owner could perform. Expect to need an equivalent for the
+next physical device rather than assuming discovery yields identity.
+**Confidence:** high — a power-cycle correlation is about as unambiguous as a test gets
+**Provenance:** ✅ VERIFIED (our device)
 **Fixture:** —
-**Why this blocks:** connecting to a BedJet takes its single BLE connection slot. Doing that to
-a device that is not ours would knock a stranger's app off their own heater, and is not ours to
-do. It is also self-defeating for the project: a protocol fixture captured from an unknown unit
-with unknown firmware is worthless as evidence, which is the whole point of `PROVENANCE.md`.
-**Next question:** If both units are ours, the device layer needs multi-device addressing from
-the start rather than as a retrofit — and since the advertisement carries no per-unit identity,
-we will need our own stable mapping from a host-local address to a human name ("left", "right").
+**Consequence:** our unit's address now lives in a **gitignored** local device registry
+(`devices.local.toml`), and `bedjet identify` / `bedjet watch` refuse any address not in it.
+The neighbour's unit is not merely un-preferred, it is unreachable through this tool without a
+deliberate `--force` (`src/bedjet_local/device/registry.py`).
+**Next question:** Does the device-name characteristic hold a user-settable name? If so, it is
+a better identity anchor than an address, and it would survive moving the daemon to a Pi — where
+the macOS address will not resolve at all.

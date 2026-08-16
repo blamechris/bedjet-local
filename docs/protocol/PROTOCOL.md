@@ -32,18 +32,23 @@ See [RL-005](../research/RESEARCH-LOG.md).
 | Advertised service UUIDs | `00001000-bed0-0080-aa55-4265644a6574` only | ✅ VERIFIED 2026-08-16 | high |
 | Manufacturer data | **none present** in the advertisement | ✅ VERIFIED 2026-08-16 | high |
 | Address form | CoreBluetooth UUID on macOS, as predicted; **not** a MAC | ✅ VERIFIED 2026-08-16 | high |
-| **Units visible** | **two**, both `BEDJET_V3`, at −75 dBm and −95 dBm | ✅ VERIFIED 2026-08-16 | high |
+| **Units visible** | **two**, both `BEDJET_V3`, at −74 dBm and −95 dBm | ✅ VERIFIED 2026-08-16 | high |
+| **Ours** | the −74 dBm unit — identified by power-cycle correlation (RL-006) | ✅ VERIFIED 2026-08-16 | high |
+| **Not ours** | the −95 dBm unit — a neighbour's. **Never connect to it.** | ✅ VERIFIED 2026-08-16 | high |
+| We own | **one** BedJet | ✅ VERIFIED 2026-08-16 | high |
 | Our firmware/hw rev | "v1.2.0" — still unresolved; not present in the advertisement | ❓ must read after connecting | low |
 
 **The advertisement carries no distinguishing information.** Same name, same service UUID, no
 manufacturer data, and a host-local address that means nothing on another machine. RSSI is the
 *only* thing separating the two units, and RSSI is not identity — it moves with position,
-posture, and what is between the radio and the device. Anything that needs to tell one BedJet
-from another has to do it after connecting, or by a physical test (RL-006).
+posture, and what is between the radio and the device. An RSSI-sorted scan would have picked
+ours here **by luck, not by logic**.
 
-> ⚠️ **Ownership is not established.** Two units are visible; it is not yet known whether both
-> are ours. A BedJet is a BLE device in a bedroom, and bedrooms have neighbours. See
-> [RL-006](../research/RESEARCH-LOG.md) — no connection attempt until this is settled.
+Identification required a physical act only the owner could perform: cutting power and watching
+which address left the scan ([RL-006](../research/RESEARCH-LOG.md)). Our unit's address is
+recorded in a **gitignored** local registry, and the CLI refuses to connect to anything absent
+from it. Expect to need an equivalent physical discriminator for the next device — this class
+of hardware does not identify itself.
 
 ## GATT layout
 

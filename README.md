@@ -50,6 +50,28 @@ Then, with the laptop **in the same room as the BedJet** (BLE is ~10 m and hates
 uv run bedjet discover
 ```
 
+### Establish which BedJet is yours first
+
+`discover` will list every BedJet in radio range, and **they are indistinguishable**: same
+`BEDJET_V3` name, same service UUID, no manufacturer data, and a host-local address. During
+our own bring-up two units showed up and only one was ours. An RSSI-sorted list would have
+picked the right one by luck.
+
+Identify yours with a physical test only its owner can perform — unplug it, re-scan, and see
+which address disappears — then record it:
+
+```toml
+# devices.local.toml  (gitignored; addresses are host-local and private)
+[device.bedroom]
+address = "..."
+notes = "identified by power test, <date>"
+```
+
+`identify` and `watch` refuse any address that is not in that file. Connecting takes a
+BedJet's single BLE slot, so connecting to a stranger's unit would knock them off their own
+heater — that is not something to leave to sort order. Full account in
+[RL-006](docs/research/RESEARCH-LOG.md).
+
 ```bash
 uv run bedjet identify <address-from-discover>
 ```

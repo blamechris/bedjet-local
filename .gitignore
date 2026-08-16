@@ -13,6 +13,10 @@ build/
 # Session ledgers (fleet convention: repo root, gitignored)
 autonomous-session-*.md
 
+# Which BedJet is ours (RL-006). Host-local addresses; never committed — a device
+# address is nobody else's business, and it does not resolve on another machine anyway.
+devices.local.toml
+
 # Raw capture output. Promote deliberately into tests/fixtures/ with provenance
 # recorded in tests/fixtures/PROVENANCE.md — never bulk-commit a capture session.
 captures/
