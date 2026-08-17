@@ -14,11 +14,15 @@ route, which is what this directory does. Full account: **RL-025** and **RL-028*
 This directory is the launch arrangement that fixes it: a minimal app bundle that carries
 the key, plus a LaunchAgent that starts the daemon *through* it.
 
-> **Status: unverified.** Everything below is built and its signing behaviour is measured,
-> but no part of it has yet run against the BedJet or survived a real login. Per
-> [`AGENTS.md`](../../AGENTS.md) rule 6, treat the TCC mechanism as ❓ HYPOTHESIS until
-> RL-027 records an observation. What *is* verified is the cdhash behaviour in
-> "Why configuration lives outside the bundle", which was measured directly.
+> **Status: ✅ verified for an attended start, ❓ unverified at login.** Double-clicked from
+> Finder, the bundle obtains the Bluetooth grant and the `uv` → Python child inherits it: the
+> daemon connected on attempt 1 and served state, where the identical interpreter had died with
+> SIGABRT under a harness the evening before (**RL-029**, with RL-025 as the matched control).
+>
+> What has **not** been shown is the case the daemon actually needs — `launchd` starting the app
+> **at login**, with nobody present to answer a prompt. Until
+> [#9](https://github.com/blamechris/bedjet-local/issues/9) settles that, this is an
+> attended-start arrangement, so treat step 4 below as untested.
 
 ## What is here
 

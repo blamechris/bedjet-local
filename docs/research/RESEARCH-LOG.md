@@ -1482,3 +1482,66 @@ are static properties of the installed apps rather than an inference from behavi
 **Next question:** does iTerm2 in fact host `bedjet serve` successfully after granting its
 prompt? Cheap to settle alongside the wrapper verification in #9, and it would confirm the
 mechanism rather than only the absence of the key.
+
+---
+
+## RL-029 — The wrapper bundle works: an unprivileged daemon holds Bluetooth for the first time
+
+**Date:** 2026-08-17
+**Question:** RL-027 built the launch arrangement but could not test the half that matters. Does
+`BedJetDaemon.app` actually obtain the Bluetooth grant, and does the `uv` → Python child several
+levels below it **inherit** that grant? (Issue #9, items 1 and 2.)
+**Setup:** Operator double-clicked `~/Applications/BedJetDaemon.app` in Finder — **not** launched
+from any terminal, which is the entire point — and approved the consent prompt. Read-only;
+`bedjet serve` on loopback, no command sent, unit left `off / standby`. Bundle cdhash
+`4fb4763286c3adfe9ea1e1e59983f48a6460439b`.
+**Observation:**
+
+```
+07:35:09  launcher: starting: repo=… host=127.0.0.1 port=8787
+07:35:09  link stopped -> connecting
+07:35:09  connecting to <device> (scan timeout 20.0s, up to 4 attempts)
+07:35:13  connected                                        ← attempt 1, ~4 s
+07:35:13  subscribed to 00002000-bed0-0080-aa55-4265644a6574
+07:35:13  status reader started
+07:35:13  link connecting -> connected
+07:35:13  listening on http://127.0.0.1:8787/api/v1
+07:35:19  discarded an untrustworthy packet (sums to 0x81, expected 0x00)
+```
+
+`GET /api/v1/state` then answered `link: connected, power: off, mode: standby, actual 21.5 °C`.
+The Python process (PID 74306, the same Homebrew framework build as RL-025) was alive and
+`LISTEN`ing on 127.0.0.1:8787. **No new crash report** — the only Python `.ips` on the machine is
+the RL-025 SIGABRT from the previous evening.
+
+**Interpretation:** **Confirmed, and the control case makes it unambiguous.** The identical
+interpreter that died instantly with SIGABRT under a harness (RL-025) ran normally here, and the
+only difference is the responsible app: a bundle we built, carrying
+`NSBluetoothAlwaysUsageDescription`, ad-hoc signed. Two claims that were HYPOTHESIS in RL-027 are
+now observed:
+
+**1. An ad-hoc, self-signed bundle can hold a TCC Bluetooth grant.** No Developer ID, no
+notarisation, no Apple-private entitlement — the usage-description key plus a consent prompt is
+sufficient. This is what makes RL-028's conclusion actionable rather than merely correct.
+
+**2. The grant is inherited down the process tree.** `open` → app bundle → `/bin/sh` → `uv` →
+Python is four levels, and CoreBluetooth was attributed to the bundle at the top rather than to
+the binary making the call. This is the same inheritance Terminal.app provides, now provided by
+something we control and can put under `launchd`.
+
+Incidental corroborations, all consistent with the previous run: split packets on the notify
+path (RL-026), the RL-017 checksum guard firing once on live traffic within 10 seconds, and a
+retained heat target of **31.5 °C** while in standby — the per-mode target memory of RL-023,
+still holding a day later across a power-cycle of the link.
+
+**Still not established:** whether the grant survives **launchd** starting the app at login
+rather than a human double-clicking it. That is the case the daemon actually needs and it is
+materially different — no login session in the foreground, nobody to answer a prompt. #9 stays
+open for it.
+
+**Confidence:** high — direct observation, with the RL-025 failure as a matched control.
+**Provenance:** ✅ VERIFIED (our host and our device)
+**Fixture:** —
+**Next question:** #9 item 3 — does `launchctl bootstrap` at login reach the same result, and
+does the grant hold across a reboot? Until that is answered the daemon is attended-start only,
+and Milestone 4's premise of a service a voice assistant can reach unprompted is unproven.
