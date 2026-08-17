@@ -106,6 +106,45 @@ class ServerConfig:
         return LOOPBACK_HOSTNAMES | self.allowed_hosts | {self.host}
 
 
+def hostname_of(header: str) -> str:
+    """The hostname in a ``Host`` header, without the port.
+
+    Bracketed IPv6 (``[::1]:8787``) and bare IPv6 (``::1``) both have to survive this, which
+    a naive ``split(":")[0]`` does not — it turns ``[::1]:8787`` into ``[``.
+    """
+    value = header.strip()
+    if value.startswith("["):
+        end = value.find("]")
+        return value[1:end] if end != -1 else value.lstrip("[")
+    return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
+
+
+def host_is_permitted(header: str, config: ServerConfig) -> bool:
+    """Whether a ``Host`` header is one this service should answer to.
+
+    **An IP literal always passes, and that is not a hole.** DNS rebinding needs a *name*:
+    the attacker points a hostname they control at an address inside the victim's network,
+    and the browser then sends that hostname in ``Host``. A request addressed to a bare
+    address had no name to rebind. Rejecting IP literals here would instead break the case
+    ADR-0004 explicitly supports — a token-protected listener reached over the LAN, where
+    the header is the server's own address and nobody has configured a name for it.
+
+    A browser reaching a LAN address directly is a different attack, and it is the ``Origin``
+    check and the token that answer it, not this one.
+    """
+    hostname = hostname_of(header)
+    if not hostname:
+        return True
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        return True
+    permitted = {hostname_of(entry).lower() for entry in config.permitted_hosts()}
+    return hostname.lower() in permitted
+
+
 def _json(payload: dict[str, Any], status: int = 200) -> web.Response:
     return web.json_response(payload, status=status)
 
@@ -126,8 +165,8 @@ async def guard(
     config = request.app[_CONFIG_KEY]
 
     if request.path != "/healthz":
-        host = (request.headers.get("Host") or "").split(":")[0]
-        if host and host not in {h.split(":")[0] for h in config.permitted_hosts()}:
+        host = request.headers.get("Host") or ""
+        if not host_is_permitted(host, config):
             # DNS rebinding: the request reached this port by resolving somebody else's
             # name to 127.0.0.1. A request genuinely addressed to us names us.
             return _error(

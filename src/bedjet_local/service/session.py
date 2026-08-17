@@ -142,6 +142,9 @@ class DeviceSession:
         self._supervisor: asyncio.Task[None] | None = None
         self._listeners: list[StateListener] = []
         self._connected = asyncio.Event()
+        # Serialises taking and releasing the link, so a reconnect in flight cannot outlive
+        # the yield that was meant to stop it.
+        self._link_lock = asyncio.Lock()
 
     # ── properties ──────────────────────────────────────────────────────────────────────
 
@@ -249,11 +252,28 @@ class DeviceSession:
         self._set_link(LinkState.STOPPED)
 
     async def _connect(self) -> None:
-        await self._transport.connect(self._address, timeout=self._connect_timeout)
-        await self._commander.start()
-        self._set_link(LinkState.CONNECTED)
+        """Take the link, unless it has been given away in the meantime.
+
+        The lock and the re-check are both load-bearing. A reconnect can be in flight when
+        a yield arrives — a drop and a yield seconds apart is an ordinary evening — and a
+        yield that silently loses a race is a yield that did not happen. Since
+        :meth:`yield_link` sets the deadline *before* it awaits anything, either this sees
+        it here and declines to connect, or the teardown queues behind us on the lock and
+        undoes what we just did. Both orderings end with the owner holding their heater.
+        """
+        async with self._link_lock:
+            if self._yield_until is not None:
+                log.info("abandoning a reconnect: the link has been yielded")
+                return
+            await self._transport.connect(self._address, timeout=self._connect_timeout)
+            await self._commander.start()
+            self._set_link(LinkState.CONNECTED)
 
     async def _teardown(self) -> None:
+        async with self._link_lock:
+            await self._teardown_locked()
+
+    async def _teardown_locked(self) -> None:
         # Order matters: unsubscribe before dropping the link, or the backend logs a storm
         # of errors for a subscription whose connection has gone (RL-017).
         with contextlib.suppress(Exception):
