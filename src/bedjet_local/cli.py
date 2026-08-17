@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import os
 import sys
@@ -601,6 +602,62 @@ async def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_mqtt(args: argparse.Namespace) -> int:
+    """⚠️ HOLDS THE LINK AND CAN WRITE. Bridge the device to an MQTT broker.
+
+    A peer of ``serve``, not a layer on top of it: run either, or both. Home Assistant
+    discovery is on by default, which is the point of the bridge existing.
+    """
+    _check_ownership(args)
+    try:
+        from .api import BedJetAPI
+        from .integrations.mqtt import MqttBridge, MqttConfig
+    except ImportError as exc:
+        print(f"⛔ the MQTT adapter needs its extra: `uv sync --extra mqtt` ({exc})")
+        return 1
+
+    config = MqttConfig(
+        hostname=args.broker,
+        port=args.broker_port,
+        username=args.username or os.environ.get("BEDJET_MQTT_USERNAME"),
+        password=os.environ.get("BEDJET_MQTT_PASSWORD"),
+        base_topic=args.base_topic,
+        device_id=args.device_id,
+        discovery=not args.no_discovery,
+    )
+
+    transport = BleakTransport()
+    session = DeviceSession(
+        transport, args.address, connect_timeout=args.timeout, settle_timeout=args.settle
+    )
+    await session.start()
+    bridge = MqttBridge(BedJetAPI(session), config)
+
+    print(f"\nBridging to mqtt://{config.hostname}:{config.port}")
+    print(f"  state:    {config.state_topic}")
+    print(f"  commands: {config.command_wildcard}")
+    print(f"  results:  {config.result_topic}")
+    print(f"  discovery: {'on' if config.discovery else 'off'}")
+    print(
+        "\n⚠️  This process holds the BedJet's only BLE slot. To hand the device back for "
+        f"five minutes:\n      mosquitto_pub -t {config.command_topic('link_yield')} -m 300\n"
+    )
+    print("Ctrl-C to stop.\n")
+
+    task = asyncio.create_task(bridge.run())
+    try:
+        await task
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await session.stop()
+        print("\nLink released — the vendor app can connect again.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bedjet",
@@ -757,6 +814,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--force", action="store_true", help=force_help)
     p_serve.add_argument("--settle", type=float, default=10.0, metavar="S")
     p_serve.set_defaults(func=cmd_serve)
+
+    p_mqtt = sub.add_parser(
+        "mqtt",
+        help="⚠️ HOLDS THE BLE LINK. Bridge the device to an MQTT broker (Milestone 3)",
+        description="Publish state and accept commands over MQTT, with Home Assistant "
+        "discovery. A peer of `serve` — run either, or both.",
+    )
+    p_mqtt.add_argument("address")
+    p_mqtt.add_argument("--broker", default="127.0.0.1", help="broker hostname")
+    p_mqtt.add_argument("--broker-port", type=int, default=1883)
+    p_mqtt.add_argument(
+        "--username",
+        help="broker username. The password comes from BEDJET_MQTT_PASSWORD only — a "
+        "password in argv is visible to every process on the machine.",
+    )
+    p_mqtt.add_argument("--base-topic", default="bedjet")
+    p_mqtt.add_argument("--device-id", default="bedjet", help="topic slug and HA unique id")
+    p_mqtt.add_argument(
+        "--no-discovery", action="store_true", help="do not publish Home Assistant discovery"
+    )
+    p_mqtt.add_argument("--timeout", type=float, default=20.0)
+    p_mqtt.add_argument("--force", action="store_true", help=force_help)
+    p_mqtt.add_argument("--settle", type=float, default=10.0, metavar="S")
+    p_mqtt.set_defaults(func=cmd_mqtt)
 
     return parser
 
