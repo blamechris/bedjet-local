@@ -61,6 +61,45 @@ def test_device_layer_does_not_import_transport() -> None:
         assert "transport" not in source, f"{path.name} references the transport layer"
 
 
+def test_adapters_contain_no_protocol_knowledge() -> None:
+    """ADR-0002's rule, made checkable: ``integrations/`` may not import ``protocol/``.
+
+    "No protocol knowledge in an adapter" is easy to agree with and easy to violate — one
+    convenient ``from ..protocol.constants import StatusMode`` in an MQTT payload builder
+    and the abstraction has leaked, with nothing failing. The adapter's whole vocabulary is
+    the strings and numbers ``api/`` hands it; if something is missing from that vocabulary,
+    the fix is to widen ``api/``, never to reach past it.
+    """
+    offenders = [
+        path.relative_to(SRC)
+        for path in (SRC / "integrations").rglob("*.py")
+        if any(
+            name.startswith("protocol") or ".protocol" in name or name.endswith(".protocol")
+            for name in _imports(path)
+        )
+    ]
+    assert not offenders, (
+        f"{offenders} import from protocol/. An adapter that needs a byte offset, a packet "
+        f"field or a device enum has leaked — add what it needs to api/ instead."
+    )
+
+
+def test_adapters_do_not_reach_into_the_device_or_service_layers_for_state() -> None:
+    """Adapters talk to ``api/``. Reaching around it to ``device/`` or ``service/`` would
+    rebuild the coupling ``api/`` exists to prevent, one import at a time.
+
+    ``transport`` is exempt from nothing here — an adapter has no business with it either.
+    """
+    forbidden = ("device", "service", "transport")
+    offenders: list[str] = []
+    for path in (SRC / "integrations").rglob("*.py"):
+        for name in _imports(path):
+            tail = name.lstrip(".").split(".")[0]
+            if tail in forbidden:
+                offenders.append(f"{path.relative_to(SRC)} -> {name}")
+    assert not offenders, f"adapters must go through api/: {offenders}"
+
+
 #: The write path is deliberately one module wide. Widening it is a safety decision, not a
 #: refactor, so it has to be made here in the open.
 ALLOWED_TO_WRITE = {"transport", "commander.py"}

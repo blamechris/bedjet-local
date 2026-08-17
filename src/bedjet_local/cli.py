@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -33,6 +34,7 @@ from .service.commander import (
     CommandUnverified,
 )
 from .service.reader import StatusReader
+from .service.session import DeviceSession
 from .transport.base import DiscoveredDevice
 from .transport.ble import BleakTransport, scan
 
@@ -536,6 +538,69 @@ async def cmd_temp(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_serve(args: argparse.Namespace) -> int:
+    """⚠️ HOLDS THE LINK AND CAN WRITE. Run the local API daemon (Milestone 3).
+
+    Unlike every other subcommand, this one keeps the BLE link for as long as it runs — and
+    the BedJet allows one client at a time, so while it runs the vendor app cannot connect.
+    That is why the API has a yield endpoint and why this prints how to use it: the owner
+    must always be able to get their own heater back without killing a process they may not
+    know how to find.
+    """
+    _check_ownership(args)
+    try:
+        from .api import BedJetAPI
+        from .integrations.http_ws import ConfigurationRefused, ServerConfig, serve
+    except ImportError as exc:
+        print(f"⛔ the HTTP adapter needs its extra: `uv sync --extra http` ({exc})")
+        return 1
+
+    token = args.token or os.environ.get("BEDJET_TOKEN")
+    try:
+        config = ServerConfig(
+            host=args.host,
+            port=args.port,
+            token=token,
+            allowed_hosts=frozenset(args.allow_host or ()),
+        )
+    except ConfigurationRefused as exc:
+        print(f"\n⛔ {exc}")
+        return 1
+
+    transport = BleakTransport()
+    session = DeviceSession(
+        transport,
+        args.address,
+        connect_timeout=args.timeout,
+        settle_timeout=args.settle,
+    )
+    await session.start()
+    api = BedJetAPI(session)
+    runner = await serve(api, config)
+
+    print(f"\nServing http://{config.host}:{config.port}/api/v1")
+    print(f"  auth:  {'Authorization: Bearer <token>' if token else 'none (loopback only)'}")
+    print("  state: GET /api/v1/state · live: GET /api/v1/ws")
+    print(
+        "\n⚠️  This process holds the BedJet's only BLE slot. The vendor app cannot "
+        "connect while\n    it runs. To hand the device back for five minutes:\n"
+        f"      curl -X POST http://{config.host}:{config.port}/api/v1/link/yield "
+        "-d '{\"seconds\": 300}'\n"
+    )
+    print("Ctrl-C to stop.\n")
+
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
+    finally:
+        await runner.cleanup()
+        await session.stop()
+        print("\nLink released — the vendor app can connect again.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bedjet",
@@ -660,6 +725,38 @@ def build_parser() -> argparse.ArgumentParser:
     p_temp.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p_temp.add_argument("--settle", type=float, default=10.0, metavar="S")
     p_temp.set_defaults(func=cmd_temp)
+
+    p_serve = sub.add_parser(
+        "serve",
+        help="⚠️ HOLDS THE BLE LINK. Run the local HTTP+WS API (Milestone 3)",
+        description="Run the local API. This holds the BedJet's only BLE slot for as long "
+        "as it runs, so the vendor app cannot connect meanwhile — use POST "
+        "/api/v1/link/yield to hand the device back temporarily.",
+    )
+    p_serve.add_argument("address")
+    p_serve.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="interface to bind (default 127.0.0.1). Binding anywhere else REQUIRES a "
+        "token: this API can switch on a heater.",
+    )
+    p_serve.add_argument("--port", type=int, default=8787)
+    p_serve.add_argument(
+        "--token",
+        help="shared secret for `Authorization: Bearer <token>`. Prefer the BEDJET_TOKEN "
+        "environment variable — an argument is visible in the process list.",
+    )
+    p_serve.add_argument(
+        "--allow-host",
+        action="append",
+        metavar="NAME",
+        help="an additional Host header to accept, e.g. a Pi's hostname. Repeatable. "
+        "Loopback names are always accepted.",
+    )
+    p_serve.add_argument("--timeout", type=float, default=20.0)
+    p_serve.add_argument("--force", action="store_true", help=force_help)
+    p_serve.add_argument("--settle", type=float, default=10.0, metavar="S")
+    p_serve.set_defaults(func=cmd_serve)
 
     return parser
 
