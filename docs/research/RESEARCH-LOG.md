@@ -1199,3 +1199,166 @@ doing rather than the room. Worth knowing before anything treats it as a room th
 **Next question:** confirm the per-mode target hypothesis directly — set a distinct target in
 each of cool and heat, switch between them, and check each returns. It costs two commands we
 have already verified and would settle RL-015's dry anomaly as a side effect.
+
+---
+
+## RL-024 — The Milestone 3 connection stack, run against the device for the first time
+
+**Date:** 2026-08-16
+**Question:** Milestone 3 shipped a connection path that had never touched hardware:
+`establish_connection` via `bleak-retry-connector`, a deliberately disabled service cache, the
+link-as-a-lease with `yield`, and supervised reconnection. CI is forbidden from trying
+(AGENTS.md rule 4), so all four sat untested underneath a daemon whose premise is running
+unattended. Do they work? (Issue #4.)
+**Setup:** `bedjet serve` over two runs totalling ~28 minutes, attended, **read-only — not one
+command was sent to the unit**, which stayed `power: off / mode: standby` throughout. Vendor
+app on Android for the yield test. The uncooperative drop was forced by toggling the *Mac's*
+Bluetooth off for ~46 s — this breaks the link outside our process without moving the laptop or
+cutting mains power to the heater, and it additionally forces the scan-and-resolve step to
+re-run against a freshly reset adapter.
+**Observation:**
+
+```
+connect          22:33:49 → 22:33:51   attempt 1   (-78 dBm)
+connect  (2nd)   22:53:36 → 22:53:38   attempt 1
+connect  (3rd)   22:59:04 → 22:59:05   attempt 1   (via `identify`)
+
+yield 120s       22:34:56  didDisconnectPeripheral → link connected -> yielded
+                           vendor app connected during the window (operator-confirmed)
+                 22:36:43  stale=true, reading_age_s=106.8
+expiry           22:36:57  link yielded -> lost
+reclaim          22:36:58  attempt 1 → connected            ~1 s
+
+drop (BT off)    22:56:10  BLE link dropped → link connected -> lost
+  backoff                  2s → 4s → 8s → 16s → 32s   (backoff_max = 60)
+  adapter back   22:56:56  Bluetooth powered on
+  reconnect      22:57:18  attempt 1 → 22:57:19 link lost -> connected
+
+post-reconnect GATT:  char …2004  [write]  command (write only)
+```
+
+**Interpretation:** **All four unknowns in #4 are resolved, and the stack behaves as designed.**
+
+**1. `establish_connection` works on the macOS host-local UUID path** — four connects, every one
+on **attempt 1**, taking 1–2 s. The `find_device_by_address` resolve step, the thing most likely
+to differ from the old direct `BleakClient(address)`, never once failed.
+
+**2. The disabled service cache is doing its job.** The 22:57:18 reconnect re-ran full service,
+characteristic *and* descriptor discovery — with a cache that enumeration is skipped. Confirmed
+where it matters: `…2004` still advertises `[write]`, not `write-without-response`, so
+`_write_needs_response` still selects write-with-response and **RL-018 cannot be silently
+resurrected by a stale property table.** This was settled read-only with `identify`; it needed
+no write to a mains heater.
+
+**3. The yield genuinely hands the device back.** Not bookkeeping — CoreBluetooth actually
+dropped the peripheral, and the vendor app really did connect during the window. That was the
+entire justification for the feature and it is now evidenced rather than assumed. The lease also
+kept the last reading *with its age* and correctly flipped `stale` at 106.8 s rather than
+presenting a fresh-looking guess.
+
+**4. Reconnection is fast; the delay is our sleep, not the radio.** Once the adapter returned,
+the link came back in **~1 s on attempt 1**. But the adapter came back at 22:56:56 and we did
+not reconnect until 22:57:18 — **22 s late, because we were mid-32 s backoff sleep.** Recovery
+latency is therefore bounded by the current backoff interval (capped at 60 s), *not* by device
+availability. For an unattended daemon that is a real characteristic: after a long outage the
+device can be back and healthy for up to a minute before we notice.
+
+**Two defects surfaced and are filed separately** — the reconnect loop misclassifying
+adapter-powered-off as an *unexpected* error, and an unhandled `InvalidStateError` on a
+perfectly healthy link. Both are findings about our stack rather than the device.
+
+**Confidence:** high
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** —
+**Next question:** should reconnection be woken by an adapter-state-change event instead of
+waiting out the backoff? It would cut the observed 22 s (worst case 60 s) of avoidable blindness
+to near zero, and the `Bluetooth powered on` callback is already being delivered to us.
+
+---
+
+## RL-025 — macOS grants Bluetooth to the *responsible app*, not to the Python binary
+
+**Date:** 2026-08-16
+**Question:** The identical `bedjet serve` command aborted instantly under one launcher and ran
+for 14 minutes under another, same venv, same interpreter. Why — and what does it mean for
+running the daemon unattended?
+**Setup:** `uv run bedjet --debug serve …` launched (a) from an agent harness whose parent
+process is `Claude.app`, and (b) from `Terminal.app`. Same machine, same
+`/opt/homebrew/…/python@3.14` framework build.
+**Observation:** (a) died on the first CoreBluetooth call with **SIGABRT, exit 134**, no Python
+traceback. The crash report gives the reason exactly:
+
+```
+termination: { "namespace": "TCC",
+  "This app has crashed because it attempted to access privacy-sensitive data without a
+   usage description. The app's Info.plist must contain an NSBluetoothAlwaysUsageDescription
+   key with a string value explaining to the user how the app uses this data." }
+```
+
+The Homebrew Python framework's `Info.plist` carries only `CFBundleIdentifier
+org.python.python` and `CFBundleName Python` — **no `NSBluetoothAlwaysUsageDescription`**.
+(b) ran normally. RL-005 recorded the enabling condition in passing over a year of entries ago:
+*"Bluetooth permission granted to the terminal."*
+
+**Interpretation:** macOS attributes CoreBluetooth access to the **responsible process** — the
+launching app bundle — not to the executing binary. Terminal.app ships the usage-description key
+and holds a TCC grant, so anything it spawns inherits the right to ask. Python itself has no such
+key, so when the responsible app lacks one too, TCC does not prompt and does not merely deny:
+**it kills the process.** The silent-abort-with-no-traceback is the diagnostic signature; look
+for `namespace: TCC` in the crash report rather than debugging the BLE code.
+
+Consequences, in rough order of how much they will bite:
+
+- **Any unattended macOS launch is affected** — `launchd`, `cron`, CI, an agent harness, or a
+  supervisor started from one. This is not an edge case for a daemon designed to run all night.
+- The fix is not a code change in this repo. It is a launch arrangement: a signed wrapper bundle
+  carrying the key, or a LaunchAgent whose responsible process already holds the grant.
+- **Directly relevant to siting the daemon on the Mac** rather than a Pi — the Mac host adds a
+  permission dependency the Pi does not have.
+- **Does not apply to Linux/BlueZ**, so a Pi deployment sidesteps it entirely. Worth weighing in
+  the ADR-0001 Pi-vs-proxy decision, which currently turns only on RSSI.
+
+**Confidence:** high
+**Provenance:** ✅ VERIFIED (our host — a macOS fact, not a device fact)
+**Fixture:** —
+**Next question:** what is the minimum launch arrangement that gives an unattended macOS daemon
+Bluetooth — a signed `.app` wrapper, or a LaunchAgent inheriting a granted parent? Needed before
+the Mac can be considered a viable host.
+
+---
+
+## RL-026 — 601 of 603 status packets required a follow-up read
+
+**Date:** 2026-08-16
+**Question:** How often does a status notification actually carry a whole packet, rather than a
+fragment needing a follow-up read? The split path is the source of the RL-017 reassembly hazard,
+and issue #2 proposes removing it.
+**Setup:** Reader statistics emitted on shutdown after ~2.5 minutes connected, read-only.
+**Observation:**
+
+```
+status reader stopped (603 packets, 601 split, 2 rejected, 1 skipped while busy)
+```
+
+Notifications arrived at **20 bytes**; a full status packet is **31**.
+
+**Interpretation:** **The split is not an edge case — it is the norm, at 99.7 %.** Every practical
+status update costs a notification *plus* a GATT read, and every one of them opens the
+reassembly window that RL-017 showed can manufacture a false "heater is off" reading from a tail
+fragment. This is the strongest available argument for **issue #2** (poll whole status packets):
+it would not be optimising a rare path, it would be deleting the path that runs essentially
+every time.
+
+Two incidental confirmations, both from live traffic rather than synthetic fixtures:
+
+- **`2 rejected`** — the RL-017 checksum guard fired on genuinely corrupt data in the field
+  (`packet sums to 0x80, expected 0x00`). First confirmation outside tests that the guard both
+  triggers and refuses the packet.
+- **`1 skipped while busy`** — the one-GATT-read-in-flight guard engaged. The collision hazard is
+  live traffic, not a theoretical concern.
+
+**Confidence:** high
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** —
+**Next question:** #2 — does reading the whole status packet remove both the follow-up read and
+the reassembly window, and what does it cost in latency?
