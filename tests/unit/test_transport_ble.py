@@ -13,8 +13,13 @@ verifiable without a radio (AGENTS.md rule 4).
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import importlib
 import inspect
+import pkgutil
 
+import bleak
+import bleak_retry_connector
 import pytest
 from bleak.exc import BleakBluetoothNotAvailableError, BleakBluetoothNotAvailableReason, BleakError
 
@@ -72,25 +77,40 @@ def test_every_bleak_exception_derives_from_bleak_error() -> None:
     ``BleakError`` fixes that only if upstream keeps deriving from it. If a future bleak
     adds an exception outside this hierarchy, this test is the notice — and the fix is to
     widen the catch in ``_bleak_errors_as_transport``, never to relax this.
+
+    It walks the **packages**, not the two public namespaces. Reading ``dir(bleak.exc)`` and
+    ``dir(bleak_retry_connector)`` sees 10 of the 27 exception classes on bleak 3.0.2, and
+    the ones it misses — anything defined in a backend and not re-exported — are precisely
+    where a platform-specific stray would appear. A guard that inspects a third of the
+    surface is the same shape of mistake as the list this replaced.
     """
-    import bleak.exc
-    import bleak_retry_connector
-
     strays: list[str] = []
-    for module in (bleak.exc, bleak_retry_connector):
-        for name in dir(module):
-            obj = getattr(module, name)
-            if (
-                inspect.isclass(obj)
-                and issubclass(obj, BaseException)
-                and obj.__module__.split(".")[0] in {"bleak", "bleak_retry_connector"}
-                and not issubclass(obj, BleakError)
-            ):
-                strays.append(f"{module.__name__}.{name}")
+    checked: set[type[BaseException]] = set()
+    for package in (bleak, bleak_retry_connector):
+        modules = [package]
+        for found in pkgutil.walk_packages(
+            getattr(package, "__path__", []), package.__name__ + "."
+        ):
+            with contextlib.suppress(Exception):  # backends for other platforms will not import
+                modules.append(importlib.import_module(found.name))
 
+        for module in modules:
+            for obj in vars(module).values():
+                if (
+                    inspect.isclass(obj)
+                    and issubclass(obj, BaseException)
+                    and obj.__module__.split(".")[0] in {"bleak", "bleak_retry_connector"}
+                    and obj not in checked
+                ):
+                    checked.add(obj)
+                    if not issubclass(obj, BleakError):
+                        strays.append(f"{obj.__module__}.{obj.__qualname__}")
+
+    assert checked, "walked no exception classes at all — the walk itself is broken"
     assert not strays, (
-        f"{strays} do not derive from BleakError, so _bleak_errors_as_transport does not "
-        f"catch them and the session layer will log them as unexpected. Widen the catch."
+        f"{sorted(strays)} do not derive from BleakError, so _bleak_errors_as_transport "
+        f"does not catch them and the session layer will log them as unexpected (#5). "
+        f"Widen the catch in transport/ble.py — do not relax this test."
     )
 
 
