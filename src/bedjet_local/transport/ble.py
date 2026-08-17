@@ -9,7 +9,9 @@ is a daemon that is offline every time the radio dips.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+from collections.abc import Iterator
 
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
@@ -33,6 +35,39 @@ log = logging.getLogger(__name__)
 DEFAULT_CONNECT_ATTEMPTS = 4
 
 
+@contextlib.contextmanager
+def _bleak_errors_as_transport(operation: str) -> Iterator[None]:
+    """Translate any ``bleak`` exception into a :class:`TransportError`.
+
+    ``base.py`` promises that "layers above should not need to know bleak's exceptions",
+    and the session layer takes that literally: it classifies by our vocabulary, sending
+    :class:`TransportError` and ``OSError`` to a WARNING-with-backoff and *everything else*
+    to ``log.exception`` — ERROR severity, a full traceback, and the word **unexpected**.
+    Any bleak type that escapes this module is therefore not merely untranslated, it is
+    actively mislabelled (#5, RL-024).
+
+    The catch is deliberately the **base class**. Every bleak exception that describes a
+    *link condition* derives from ``BleakError`` — walked and asserted in
+    ``tests/unit/test_transport_ble.py``, not assumed — so enumerating leaf types would be a
+    list that silently falls out of date on the next upstream release, with a fresh
+    traceback at 3am as the only notice. "Powering the adapter off" is among the most
+    expected things that can happen to a BLE daemon; it reached the operator as an
+    unexpected error only because ``BleakBluetoothNotAvailableError`` was not in such a list.
+
+    It is equally deliberately **not** ``Exception``. Bleak also defines exceptions that are
+    bugs rather than conditions — ``bluezdbus.signals.InvalidMessageTypeError`` is a
+    ``TypeError`` — and those must keep their traceback. Translating one would hand a defect
+    to the reconnect loop, which would back it off and retry it forever at WARNING: the
+    mirror image of the misclassification this function exists to fix.
+
+    The bleak type name is kept in the message. Severity should drop, diagnosis should not.
+    """
+    try:
+        yield
+    except BleakError as exc:
+        raise TransportError(f"{operation}: {type(exc).__name__}: {exc}") from exc
+
+
 async def scan(timeout: float = 10.0, *, all_devices: bool = False) -> list[DiscoveredDevice]:
     """Scan for BedJet-looking devices.
 
@@ -44,10 +79,8 @@ async def scan(timeout: float = 10.0, *, all_devices: bool = False) -> list[Disc
     log.debug("scanning for %.1fs (all_devices=%s)", timeout, all_devices)
     found: list[DiscoveredDevice] = []
 
-    try:
+    with _bleak_errors_as_transport("scan failed"):
         results = await BleakScanner.discover(timeout=timeout, return_adv=True)
-    except BleakError as exc:  # pragma: no cover - requires an adapter
-        raise TransportError(f"scan failed: {exc}") from exc
 
     for device, adv in results.values():
         uuids = tuple(u.lower() for u in (adv.service_uuids or ()))
@@ -97,8 +130,14 @@ class BleakTransport:
         out to be the better shape anyway: "did not appear in a scan" and "appeared but
         refused the link" become two separate outcomes at the point where they differ,
         instead of two exception types we have to tell apart afterwards (RL-009).
+
+        The scan is guarded because *this* is where the reconnect loop meets a powered-off
+        adapter: it is the first bleak call of a reconnect, and it was the only unguarded
+        one on that path while ``scan()`` above already wrapped its own ``discover``. That
+        asymmetry, rather than the exception itself, was the defect in #5.
         """
-        device = await BleakScanner.find_device_by_address(address, timeout=timeout)
+        with _bleak_errors_as_transport(f"scanning for {address}"):
+            device = await BleakScanner.find_device_by_address(address, timeout=timeout)
         if device is not None:
             return device
         raise TransportError(
@@ -181,9 +220,13 @@ class BleakTransport:
 
     async def disconnect(self) -> None:
         if self._client is not None:
-            await self._client.disconnect()
+            # Cleared before the await, so a disconnect that raises still leaves this
+            # object believing it holds nothing. The alternative — reporting a link we do
+            # not have — is the worse of the two errors for a device with one client slot.
+            client, self._client = self._client, None
+            with _bleak_errors_as_transport("disconnecting"):
+                await client.disconnect()
             log.info("disconnected")
-            self._client = None
 
     def _require(self) -> BleakClientWithServiceCache:
         if self._client is None or not self._client.is_connected:
@@ -192,7 +235,8 @@ class BleakTransport:
 
     async def read(self, characteristic: str) -> bytes:
         async with self._gatt:
-            data = bytes(await self._require().read_gatt_char(characteristic))
+            with _bleak_errors_as_transport(f"reading {characteristic}"):
+                data = bytes(await self._require().read_gatt_char(characteristic))
         log.debug("read  %s -> %s", characteristic, data.hex(" "))
         return data
 
@@ -231,7 +275,8 @@ class BleakTransport:
         Pass an explicit bool only to override deliberately.
         """
         if response is None:
-            response = self._write_needs_response(characteristic)
+            with _bleak_errors_as_transport(f"inspecting {characteristic}"):
+                response = self._write_needs_response(characteristic)
         # Deliberately loud. Every write to this device is a physical event, and the log
         # is the record of what we asked a heater to do.
         log.warning(
@@ -241,7 +286,8 @@ class BleakTransport:
             "with response" if response else "without response",
         )
         async with self._gatt:
-            await self._require().write_gatt_char(characteristic, data, response=response)
+            with _bleak_errors_as_transport(f"writing {characteristic}"):
+                await self._require().write_gatt_char(characteristic, data, response=response)
 
     async def subscribe(self, characteristic: str, callback: NotifyCallback) -> None:
         client = self._require()
@@ -250,17 +296,20 @@ class BleakTransport:
             log.debug("notify %s -> %s", characteristic, bytes(data).hex(" "))
             callback(bytes(data))
 
-        await client.start_notify(characteristic, _on_notify)
+        with _bleak_errors_as_transport(f"subscribing to {characteristic}"):
+            await client.start_notify(characteristic, _on_notify)
         log.info("subscribed to %s", characteristic)
 
     async def unsubscribe(self, characteristic: str) -> None:
-        await self._require().stop_notify(characteristic)
+        with _bleak_errors_as_transport(f"unsubscribing from {characteristic}"):
+            await self._require().stop_notify(characteristic)
 
     async def services(self) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
         client = self._require()
         layout: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
-        for service in client.services:
-            layout[service.uuid] = [
-                (char.uuid, tuple(char.properties)) for char in service.characteristics
-            ]
+        with _bleak_errors_as_transport("enumerating services"):
+            for service in client.services:
+                layout[service.uuid] = [
+                    (char.uuid, tuple(char.properties)) for char in service.characteristics
+                ]
         return layout

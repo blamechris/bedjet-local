@@ -9,6 +9,7 @@ than it is.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -90,6 +91,46 @@ async def test_a_dropped_link_does_not_change_what_we_believe_about_the_heater()
         assert snapshot.reading is not None
         assert snapshot.reading.power is Power.ON, "we last saw it running, and we still did"
         assert snapshot.reading_age_s is not None
+    finally:
+        await session.stop()
+
+
+async def test_a_refused_reconnect_is_a_warning_without_a_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The severity contract behind #5, asserted on the loop rather than on the transport.
+
+    The daemon's premise is running unattended overnight, so what an operator (or a log
+    alert) sees for an ordinary adapter cycle decides whether ERROR still means anything at
+    3am. A routine reconnect failure emitting ERROR-with-traceback is what trains people to
+    ignore the level, and then a genuine fault arrives looking identical.
+
+    ``TransportError`` is the whole vocabulary this loop classifies on, which is why the
+    transport layer must translate every bleak type into it — see
+    ``tests/unit/test_transport_ble.py``.
+    """
+    caplog.set_level(logging.DEBUG, logger="bedjet_local.service.session")
+    transport = MockTransport()
+    session = await _started(transport, backoff_initial=0.01, backoff_max=0.02)
+    try:
+        transport.refuse_next_connects(50)
+        transport.drop()
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if any("reconnect failed" in r.message for r in caplog.records):
+                break
+
+        failures = [r for r in caplog.records if "reconnect failed" in r.message]
+        assert failures, "the refused reconnect should have been reported"
+        for record in failures:
+            assert record.levelname == "WARNING"
+            assert record.exc_info is None, "a routine refusal must not carry a stack trace"
+
+        unexpected = [r for r in caplog.records if "unexpected error reconnecting" in r.message]
+        assert not unexpected, (
+            f"a TransportError reached the bare `except Exception` branch: {unexpected}. "
+            f"That branch is for genuine surprises, and everything it logs is ERROR."
+        )
     finally:
         await session.stop()
 
