@@ -215,15 +215,35 @@ async def test_set_mode_cool_writes_the_command_value_and_verifies_the_status_va
     assert result.after.mode is StatusMode.COOL
 
 
-@pytest.mark.parametrize("mode", [CommandMode.HEAT, CommandMode.TURBO, CommandMode.EXTENDED_HEAT])
-async def test_set_mode_refuses_the_heating_modes(mode: CommandMode) -> None:
-    """The commands that make heat are refused in code. Nothing reaches the device."""
+@pytest.mark.parametrize("mode", [CommandMode.TURBO, CommandMode.EXTENDED_HEAT])
+async def test_set_mode_refuses_the_locked_modes(mode: CommandMode) -> None:
+    """Turbo and extended heat stay locked. Nothing reaches the device."""
     transport = MockTransport()
     commander = await _armed(transport, STANDBY)
 
-    with pytest.raises(CommandRefused, match="THERMALLY_SAFE_MODES"):
+    with pytest.raises(CommandRefused):
         await commander.set_mode(mode)
     assert transport.writes == []
+
+
+async def test_set_mode_heat_verifies_against_the_heat_status_value() -> None:
+    """Command HEAT is `0x03`; a heating unit reports status `0x01`. Offset enums again."""
+    transport = MockTransport()
+    commander = await _armed(transport, STANDBY)
+
+    async def respond() -> None:
+        await asyncio.sleep(0)
+        transport.emit(
+            STATUS_UUID,
+            build_status(mode=StatusMode.HEAT, target=63, min_temp=45, max_temp=80),
+        )
+
+    task = asyncio.create_task(respond())
+    result = await commander.set_mode(CommandMode.HEAT)
+    await task
+
+    assert transport.writes == [(COMMAND_UUID, bytes([0x01, 0x03]))]
+    assert result.after.mode is StatusMode.HEAT
 
 
 async def test_set_mode_refuses_when_already_in_that_mode() -> None:

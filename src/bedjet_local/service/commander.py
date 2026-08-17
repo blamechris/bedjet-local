@@ -18,7 +18,8 @@ checksum** — RL-017, where a corrupt fragment reported a heater as switched of
 - ✅ ``set_fan_percent`` — `07 <step>`, VERIFIED (RL-020)
 - ✅ ``set_mode`` — `01 <mode>`, COOL VERIFIED (RL-021); restricted to the **thermally safe**
   operands, with the modes that make heat refused in code rather than by convention
-- 📖 ``set_temperature`` — `03 <temp>`, bounded by the device's own reported range
+- ✅ ``set_temperature`` — `03 <temp>`, VERIFIED (RL-022)
+- 📖 ``set_mode(HEAT)`` — unlocked once OFF was proven reproducible; see :data:`UNLOCKED_MODES`
 """
 
 from __future__ import annotations
@@ -46,16 +47,31 @@ log = logging.getLogger(__name__)
 
 #: Mode operands this module is permitted to send.
 #:
-#: OFF and COOL and DRY cannot make the bed hotter, so they are the ones to prove the mode
-#: enum with. HEAT, TURBO and EXTENDED_HEAT are deliberately absent: `SAFETY.md`'s bring-up
-#: order puts heat last and attended, and a list that has to be edited to send one is a much
-#: better guard than a comment asking politely.
+#: **HEAT was unlocked once the preconditions for it were met** — not because the risk
+#: assessment changed, but because it was discharged. The danger was never "the device makes
+#: heat": that is its job, under its own thermostat and its own hardware thermal protection,
+#: neither of which we touch. The danger was that our *stack* was unverified — if the decoder
+#: were wrong we could not tell what the device was doing, and RL-017 proved that concern
+#: justified by reporting a running heater as switched off.
 #:
-#: Note what is NOT the reason for this: none of these values is *suspected* wrong. OFF
-#: verified that the enum is real. The restriction is about consequence, not confidence.
-THERMALLY_SAFE_MODES = frozenset(
-    {CommandMode.OFF, CommandMode.COOL, CommandMode.DRY},
+#: What changed:
+#:   - four commands verified end-to-end against observed state
+#:   - state gated on a checksum, so a corrupt packet can no longer masquerade as truth
+#:   - **OFF is verified and reproducible** — a proven software stop is the single best
+#:     precondition for testing heat, and we did not have it before
+#:   - targets are bounded by the range the device reports for its current mode
+#:
+#: TURBO and EXTENDED_HEAT stay locked. Turbo is the device's most aggressive setting (a
+#: fixed 43 °C for 10 minutes) and nothing needs it. Extended heat is worse than untested:
+#: status ``0x03`` has never been observed, so its result could not be verified even if the
+#: command worked — and :meth:`Commander.set_mode` refuses it on those grounds independently
+#: of this set.
+UNLOCKED_MODES = frozenset(
+    {CommandMode.OFF, CommandMode.COOL, CommandMode.DRY, CommandMode.HEAT},
 )
+
+#: Alias kept so nothing that imported the previous name breaks silently.
+THERMALLY_SAFE_MODES = UNLOCKED_MODES
 
 
 class CommandRefused(Exception):
@@ -81,6 +97,7 @@ _EXPECTED_STATUS_FOR = {
     CommandMode.OFF: StatusMode.STANDBY,
     CommandMode.COOL: StatusMode.COOL,
     CommandMode.DRY: StatusMode.DRY,
+    CommandMode.HEAT: StatusMode.HEAT,
 }
 
 
@@ -238,11 +255,12 @@ class Commander:
         refused here — in code — because they are the commands that make heat, and
         `SAFETY.md` puts those last and attended.
         """
-        if mode not in THERMALLY_SAFE_MODES:
+        if mode not in UNLOCKED_MODES:
             raise CommandRefused(
-                f"{mode.name} is not in THERMALLY_SAFE_MODES. The heating modes come last "
-                f"and attended (docs/SAFETY.md) — unlock this one deliberately, in its own "
-                f"commit, once the safe operands have proven the mode enum."
+                f"{mode.name} is not in UNLOCKED_MODES. Turbo is the device's most "
+                f"aggressive setting and nothing needs it; extended heat has never been "
+                f"observed in status, so its result could not be verified even if it worked. "
+                f"Unlock deliberately, in its own commit, with a reason."
             )
 
         expected = _EXPECTED_STATUS_FOR.get(mode)

@@ -27,7 +27,7 @@ from .protocol.constants import (
 )
 from .protocol.packets import StatusPacket
 from .service.commander import (
-    THERMALLY_SAFE_MODES,
+    UNLOCKED_MODES,
     Commander,
     CommandRefused,
     CommandUnverified,
@@ -637,8 +637,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_mode.add_argument("address")
     p_mode.add_argument(
         "mode",
-        choices=sorted(m.name.lower() for m in THERMALLY_SAFE_MODES),
-        help="heating modes are deliberately unavailable — see docs/SAFETY.md",
+        choices=sorted(m.name.lower() for m in UNLOCKED_MODES),
+        help="turbo and extended heat are deliberately unavailable — see docs/SAFETY.md",
     )
     p_mode.add_argument("--timeout", type=float, default=20.0)
     p_mode.add_argument("--force", action="store_true", help=force_help)

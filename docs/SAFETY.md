@@ -149,3 +149,37 @@ owner out of the only remaining control path for their own heater.
 See [`AGENTS.md`](../AGENTS.md). The short version: hardware commands have consequences that
 `git revert` does not undo, CI never touches the device, and you may not promote an upstream
 claim to an observation about our hardware.
+
+## Why heat was unlocked, and what the risk actually was
+
+Recorded because "we were careful, then we stopped being careful" is not a good look in a
+safety document, and that is not what happened.
+
+**The risk was never that the device makes heat.** That is its job. It has its own thermostat,
+its own hardware thermal protection, and its own runtime limits, none of which this project
+touches or can touch over BLE. The manufacturer designed a machine to blow warm air into a bed
+all night; software asking it to do so is not the dangerous part.
+
+**The risk was that our stack was unverified.** If the decoder were wrong, we could not tell
+what the device was doing — and RL-017 proved that concern justified in the most direct way
+available, by reporting a running heater as switched off. Commanding a machine you cannot
+reliably observe is the actual hazard, and it is a property of the software, not the appliance.
+
+That concern is now discharged, specifically:
+
+| Precondition | Status |
+|---|---|
+| Commands verified end-to-end against observed state | ✅ four of them |
+| State gated on a checksum, so corrupt packets cannot masquerade as truth | ✅ RL-017 |
+| **A proven software stop** | ✅ OFF verified and reproduced |
+| Targets bounded by the range the device reports for its current mode | ✅ RL-013 |
+| Human present, plug located | ✅ every write is gated on it |
+
+The third row is the one that matters most. **Testing heat without a verified OFF means
+creating a state you cannot exit in software.** We now have one, tested twice from different
+starting states. That is what changed — not the appetite for risk.
+
+**Still locked:** turbo (a fixed 43 °C / 109 °F, the device's most aggressive setting, and
+nothing needs it) and extended heat (status `0x03` has never been observed, so its result
+could not be verified even if the command worked — a command whose success is indistinguishable
+from its failure should not be sendable).

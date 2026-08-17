@@ -104,24 +104,34 @@ def test_the_write_path_constructs_only_unlocked_commands() -> None:
     )
 
 
-def test_the_heating_modes_cannot_be_sent() -> None:
-    """The commands that make heat are refused in code, not by convention.
+def test_the_most_aggressive_modes_stay_locked() -> None:
+    """Unlocking is deliberate, per mode, with a reason — asserted on the real object.
 
-    `SAFETY.md` puts heat last and attended. A frozenset that has to be edited to send one
-    is a far better guard than a comment asking politely — and this asserts the actual
-    object the sender consults, not a string in a file.
-
-    Note what this is NOT about: none of these values is suspected wrong. OFF proved the
-    enum is real. The restriction is about consequence, not confidence.
+    HEAT was unlocked once OFF was verified and reproducible: a proven software stop is the
+    precondition that makes testing heat reasonable, and we did not have it before. TURBO is
+    the device's most aggressive setting (a fixed 43 °C) and nothing needs it.
     """
     from bedjet_local.protocol.constants import CommandMode
-    from bedjet_local.service.commander import THERMALLY_SAFE_MODES
+    from bedjet_local.service.commander import UNLOCKED_MODES
 
-    for mode in (CommandMode.HEAT, CommandMode.TURBO, CommandMode.EXTENDED_HEAT):
-        assert mode not in THERMALLY_SAFE_MODES, f"{mode.name} must stay locked"
+    for mode in (CommandMode.TURBO, CommandMode.EXTENDED_HEAT):
+        assert mode not in UNLOCKED_MODES, f"{mode.name} must stay locked"
 
-    assert CommandMode.OFF in THERMALLY_SAFE_MODES
-    assert CommandMode.COOL in THERMALLY_SAFE_MODES
+    for mode in (CommandMode.OFF, CommandMode.COOL, CommandMode.HEAT):
+        assert mode in UNLOCKED_MODES
+
+
+def test_a_mode_with_no_verified_status_value_cannot_be_verified() -> None:
+    """Extended heat is refused twice over: not unlocked, and unverifiable in principle.
+
+    Status ``0x03`` has never been observed, so there is no value to compare a result
+    against. A command whose success cannot be distinguished from its failure must not be
+    sendable, independently of any allowlist.
+    """
+    from bedjet_local.protocol.constants import CommandMode
+    from bedjet_local.service.commander import _EXPECTED_STATUS_FOR
+
+    assert CommandMode.EXTENDED_HEAT not in _EXPECTED_STATUS_FOR
 
 
 def test_encoder_is_pure() -> None:
