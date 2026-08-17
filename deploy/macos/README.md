@@ -1,12 +1,14 @@
 # Running the daemon unattended on macOS
 
-`bedjet serve` works when you launch it from Terminal.app and dies instantly under
+`bedjet serve` works when you launch it from a terminal you have granted Bluetooth, and dies instantly under
 `launchd`, `cron`, or any agent harness — **SIGABRT, exit 134, no Python traceback**. The
 cause is not in this repo's code. macOS attributes CoreBluetooth to the *responsible app
 bundle* rather than to the executing binary, and when neither the responsible app nor the
 binary carries `NSBluetoothAlwaysUsageDescription`, TCC does not prompt and does not deny —
-it kills the process. Terminal.app works only because it ships that key and holds a grant,
-which everything it spawns inherits. Full account: **RL-025** in
+it kills the process. A terminal works only because *it* is allowed to prompt and holds a grant,
+which everything it spawns inherits — Terminal.app via an Apple-private entitlement, iTerm2 via
+the usage-description key it ships (RL-028). An ad-hoc bundle of ours can only take the second
+route, which is what this directory does. Full account: **RL-025** and **RL-028** in
 [`docs/research/RESEARCH-LOG.md`](../../docs/research/RESEARCH-LOG.md).
 
 This directory is the launch arrangement that fixes it: a minimal app bundle that carries
@@ -133,7 +135,7 @@ curl -X POST http://127.0.0.1:8787/api/v1/link/yield -d '{"seconds": 300}'
 
 Do not install the LaunchAgent until something actually needs the daemon to be up
 unprompted. Steps 1–3 are useful on their own — they are what make an attended launch work
-from outside Terminal.app — and they carry none of this consequence.
+from outside an already-granted terminal — and they carry none of this consequence.
 
 ## Binding beyond loopback (tailnet)
 
