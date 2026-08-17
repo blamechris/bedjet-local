@@ -249,6 +249,18 @@ def _max_runtime(data: bytes) -> int | None:
     return hours * 3600 + minutes * 60
 
 
+def looks_like_packet_start(data: bytes) -> bool:
+    """Whether ``data`` plausibly begins a status packet.
+
+    A notification carrying the *tail* of a split packet has no header, so treating it as a
+    fresh packet decodes garbage from offsets that mean something else entirely (RL-017).
+    The format byte is the cheapest discriminator we have.
+    """
+    if len(data) <= Offset.PACKET_FORMAT:
+        return False
+    return data[Offset.PACKET_FORMAT] in (PACKET_FORMAT_V3_HOME, PACKET_FORMAT_DEBUG)
+
+
 def reassemble(first: bytes, remainder: bytes) -> bytes:
     """Join a partial notification with the follow-up read.
 

@@ -792,3 +792,84 @@ The first write remains a deliberate, attended event.
 status read back immediately to confirm the mode became `0x00` standby. That single exchange
 verifies the opcode, the operand, the characteristic, and the write path all at once — and off
 is the one command whose failure mode is a device that stays on.
+
+---
+
+## RL-017 — ❌ FALSE VERIFICATION: the tool reported a heater off while it was running
+
+**Date:** 2026-08-16
+**Status:** the OFF command is **NOT verified**. The claim in RL-016's plan is retracted.
+**Question:** Does `01 01` turn the device off?
+**Setup:** Unit running in Cool via the vendor app, app closed, `bedjet off`. Write sent,
+read-back performed.
+**Observation:** The tool printed:
+
+```
+✅ verified: the device did what we asked.
+    after:  power=off  mode=standby  ...  remaining=255:00:21  anomalies=4
+```
+
+**The BedJet did not turn off.** The "after" state came from this, saved as
+`tests/fixtures/corrupt_tail_fragment.bin`:
+
+```
+01 9a 01 10 ff 00 15 34 00 00 22      ← 11 bytes, format byte 0x9a, checksum fails
+```
+
+That is **bytes 20–30 of a real status packet** — a tail fragment, delivered as if it were a
+whole packet. Its byte 9 is really byte 29 (the notify code), which happened to be `0x00`,
+and `0x00` is standby. `remaining=255:00:21` should have been the giveaway to a human, but
+nothing in the code was looking.
+
+**Interpretation — four defects, all of them mine, that had to line up:**
+
+1. **Root cause: concurrent GATT reads corrupted each other.** Every status arrives split and
+   the device notifies several times a second, so the reader span a follow-up read *per
+   notification*. Bleak's CoreBluetooth backend keys pending reads by characteristic handle,
+   so overlapping reads of one characteristic collide — visible in the log as
+   `KeyError: 41` and `CancelledError` storms. One read's remainder was delivered as another's
+   notification.
+2. **The reader decoded a tail fragment as a fresh packet.** Nothing checked that a
+   notification *began* a packet, so garbage was parsed at offsets that mean something else.
+3. **The reader published a packet that failed its own checksum.** This is the galling one.
+   **We had discovered the checksum (RL-013), implemented it, tested it, and then did not
+   consult it at the one point where trusting a corrupt packet is dangerous.** A finding that
+   is not wired into the decision it protects is decoration.
+4. **Verification gated on a field, not on the packet's integrity.** `send_off` checked
+   `mode is STANDBY` and nothing else — so noise that happened to contain a zero byte was
+   accepted as proof about a physical device.
+
+**The deeper lesson.** The read-back loop was built precisely because "the write returned
+cleanly" proves nothing. It then failed in exactly the same shape one level up: **"the
+read-back said standby" also proves nothing unless the read-back is trustworthy.** Verifying
+an unverified thing with an unverified thing is not verification. Every layer that turns bytes
+into a claim needs its own integrity gate, and this project already had the gate built.
+
+**Fixes, all with regression tests that replay the real corrupt bytes:**
+
+- `BleakTransport` serialises GATT operations behind a lock — the backend limitation is real
+  and belongs to the layer that owns the backend.
+- `StatusReader` allows **one** in-flight follow-up read; notifications arriving during one
+  are skipped and counted, which is safe because the device repeats itself constantly.
+- `looks_like_packet_start()` rejects notifications that do not begin a packet.
+- `StatusPacket.is_trustworthy` (checksum passed **and** complete) — and the reader **never
+  publishes** a packet that fails it.
+- `Commander` requires a trustworthy packet for both the baseline and the confirmation, and
+  refuses to send at all without a trustworthy baseline.
+- `stop()` cancels in-flight reads, ending the teardown error storm; read failures log once,
+  not with a full traceback per packet.
+
+**What we still do not know: what `01 01` actually did.** The unit did not switch off. It may
+have been ignored, or it may have done something else. Note the shape of RL-014's finding:
+status and command enums are offset, and **if commands in fact use the same values as status,
+`01 01` means *heat*, not *off*** — status `0x01` is heat. That is a hypothesis, not a
+conclusion, but it is the first thing the next experiment should test, and it argues for
+checking what the unit was doing after the write rather than assuming nothing happened.
+**Confidence:** high on the defects; the command's effect is unknown
+**Provenance:** ✅ VERIFIED (our device) for the failure; ❓ for what `01 01` does
+**Fixture:** `tests/fixtures/corrupt_tail_fragment.bin`
+**Next question:** re-run `bedjet off` with the fixes in place. Three outcomes, all
+informative: verified (the command table is right and only our plumbing was broken);
+`CommandUnverified` (the device genuinely ignores `01 01`, and the command table is wrong —
+test `01 00` next, matching the status enum); or refused (the link is too poor to command
+safely, which is its own answer).

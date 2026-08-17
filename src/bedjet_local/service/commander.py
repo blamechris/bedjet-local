@@ -74,6 +74,8 @@ class Commander:
         self._reader = StatusReader(transport, self._on_state)
 
     def _on_state(self, state: BedJetState, packet: StatusPacket) -> None:
+        # The reader already drops untrustworthy packets, so anything arriving here has
+        # passed its checksum. Both layers check anyway: this one guards a physical action.
         self._latest = (state, packet)
         self._updated.set()
 
@@ -110,6 +112,13 @@ class Commander:
         an unobservable command teaches us nothing while still being a write to a heater.
         """
         before_state, before_packet = await self.wait_for_state(self._settle_timeout)
+
+        if not before_packet.is_trustworthy:
+            raise CommandRefused(
+                "the current state came from a packet that failed its checksum, so there is "
+                "no trustworthy baseline to verify against. Retry — and if it persists, the "
+                "link is too poor to command the device safely."
+            )
 
         if before_state.mode is StatusMode.STANDBY or before_state.power is Power.OFF:
             raise CommandRefused(
@@ -148,6 +157,15 @@ class Commander:
             self._updated.clear()
             assert self._latest is not None
             after_state, after_packet = self._latest
+            # RL-017: gate on the packet's integrity, not just its fields. A corrupt
+            # 11-byte fragment once decoded to mode=standby — because its tenth byte
+            # happened to be zero — and was accepted as proof a heater had switched off.
+            # The reader now discards untrustworthy packets, and this is the second lock on
+            # the same door: verification of a physical action requires a packet that
+            # passed its own checksum.
+            if not after_packet.is_trustworthy:
+                log.warning("ignoring an untrustworthy packet while verifying")
+                continue
             if after_state.mode is StatusMode.STANDBY:
                 return CommandResult(
                     before=before_state,

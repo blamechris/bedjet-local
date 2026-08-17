@@ -108,6 +108,21 @@ class StatusPacket:
         return len(self.raw) >= total
 
     @property
+    def is_trustworthy(self) -> bool:
+        """Whether this packet's fields may be believed.
+
+        **Anything that acts on device state must gate on this.** A packet that fails its
+        checksum is not "a packet with some odd values" — its fields are meaningless, and
+        reading them is worse than having no reading at all.
+
+        Learned the hard way (RL-017): a mis-delivered 11-byte tail fragment decoded to
+        ``power=off mode=standby``, purely because its tenth byte happened to be zero, and
+        was accepted as proof that a heater had switched off. The checksum that would have
+        caught it existed and was simply not consulted.
+        """
+        return self.checksum_ok is True and self.is_complete
+
+    @property
     def is_plausible(self) -> bool:
         """Whether this packet looks like a real V3 status packet.
 

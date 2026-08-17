@@ -8,6 +8,7 @@ in Milestone 2, not a side effect of bring-up.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from bleak import BleakClient, BleakScanner
@@ -64,6 +65,12 @@ class BleakTransport:
 
     def __init__(self) -> None:
         self._client: BleakClient | None = None
+        # Bleak's CoreBluetooth backend keys pending GATT operations by characteristic
+        # handle, so two overlapping reads of the same characteristic collide: one
+        # cancels the other's future and they can return each other's data. That is how a
+        # tail fragment was mistaken for a whole packet in RL-017. Serialise here, at the
+        # layer that owns the backend, so no caller has to know.
+        self._gatt = asyncio.Lock()
 
     @property
     def is_connected(self) -> bool:
@@ -113,7 +120,8 @@ class BleakTransport:
         return self._client
 
     async def read(self, characteristic: str) -> bytes:
-        data = bytes(await self._require().read_gatt_char(characteristic))
+        async with self._gatt:
+            data = bytes(await self._require().read_gatt_char(characteristic))
         log.debug("read  %s -> %s", characteristic, data.hex(" "))
         return data
 
@@ -121,7 +129,8 @@ class BleakTransport:
         # Deliberately loud. Every write to this device is a physical event, and the log
         # is the record of what we asked a heater to do.
         log.warning("WRITE %s <- %s", characteristic, data.hex(" "))
-        await self._require().write_gatt_char(characteristic, data, response=response)
+        async with self._gatt:
+            await self._require().write_gatt_char(characteristic, data, response=response)
 
     async def subscribe(self, characteristic: str, callback: NotifyCallback) -> None:
         client = self._require()

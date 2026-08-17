@@ -146,6 +146,23 @@ packet — possibly meaningful, possibly coincidence. See RL-015.
 Also the fixture that confirmed a prediction: `0x05` was predicted from the mode ordering
 *before* this capture existed.
 
+### `corrupt_tail_fragment.bin` — ⚠️ a deliberately BAD packet
+
+| | |
+|---|---|
+| **Captured** | 2026-08-16, during the first write attempt |
+| **Device state** | **running in Cool** — the unit did *not* switch off |
+| **Bytes** | `01 9a 01 10 ff 00 15 34 00 00 22` (11 bytes) |
+| **What it is** | bytes 20–30 of a real status packet, delivered as though it were a whole one |
+
+**This fixture exists to be rejected.** It decodes to `power=off mode=standby` — because its
+byte 9 is really byte 29 of a real packet (the notify code), which happened to be `0x00`. It
+failed its checksum, its format byte is `0x9a` rather than `0x56`, and it reported
+`remaining=255:00:21`.
+
+It was accepted as proof that a heater had switched off. See RL-017. Every regression test for
+that failure replays these exact bytes.
+
 ---
 
 ## Checksum
