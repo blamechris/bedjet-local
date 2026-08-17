@@ -13,6 +13,7 @@ import asyncio
 import pytest
 
 from bedjet_local.device.state import Power
+from bedjet_local.protocol import encode
 from bedjet_local.protocol.constants import (
     COMMAND_UUID,
     STATUS_UUID,
@@ -232,3 +233,81 @@ async def test_set_mode_refuses_when_already_in_that_mode() -> None:
     with pytest.raises(CommandRefused, match="already satisfies"):
         await commander.set_mode(CommandMode.COOL)
     assert transport.writes == []
+
+
+# ── Command #4: temperature, bounded by the device's own reported range ─────────────────
+
+COOL_RUNNING = build_status(mode=StatusMode.COOL, target=50, min_temp=38, max_temp=52)
+
+
+async def test_set_temperature_writes_the_encoded_value() -> None:
+    transport = MockTransport()
+    commander = await _armed(transport, COOL_RUNNING)
+
+    async def respond() -> None:
+        await asyncio.sleep(0)
+        transport.emit(STATUS_UUID, build_status(mode=StatusMode.COOL, target=44))
+
+    task = asyncio.create_task(respond())
+    result = await commander.set_temperature(22.0)
+    await task
+
+    assert transport.writes == [(COMMAND_UUID, bytes([0x03, 44]))]
+    assert result.after.target_temp_c == 22.0
+
+
+async def test_set_temperature_uses_the_live_reported_bounds_not_a_constant() -> None:
+    """RL-013: the permitted range moves with the mode, so only the device can bound this.
+
+    25 C is inside cool's 19-26 C range and must be accepted; 30 C is outside it and must be
+    refused — even though 30 C is perfectly legal in heat.
+    """
+    transport = MockTransport()
+    commander = await _armed(transport, COOL_RUNNING)
+
+    with pytest.raises(encode.CommandError, match="outside"):
+        await commander.set_temperature(30.0)
+    assert transport.writes == [], "an out-of-range target must not reach the device"
+
+
+async def test_set_temperature_refuses_without_reported_bounds() -> None:
+    """No bounds in the packet means nothing to validate against — do not guess."""
+    no_bounds = build_status(mode=StatusMode.COOL, target=50, min_temp=0, max_temp=0)
+    transport = MockTransport()
+    commander = await _armed(transport, no_bounds)
+
+    with pytest.raises((CommandRefused, encode.CommandError)):
+        await commander.set_temperature(22.0)
+    assert transport.writes == []
+
+
+async def test_set_temperature_refuses_when_the_unit_is_off() -> None:
+    transport = MockTransport()
+    commander = await _armed(transport, STANDBY)
+
+    with pytest.raises(CommandRefused, match="not running"):
+        await commander.set_temperature(22.0)
+    assert transport.writes == []
+
+
+async def test_set_temperature_rounds_to_the_wire_granularity_and_verifies_the_rounded_value() -> (
+    None
+):
+    """The wire has 0.5 C granularity. Verify what we send, not what was asked for.
+
+    Otherwise a request for 22.3 C would write 22.5 C and then fail verification against
+    22.3 — reporting a failure for a device that did exactly as it was told.
+    """
+    transport = MockTransport()
+    commander = await _armed(transport, COOL_RUNNING)
+
+    async def respond() -> None:
+        await asyncio.sleep(0)
+        transport.emit(STATUS_UUID, build_status(mode=StatusMode.COOL, target=45))
+
+    task = asyncio.create_task(respond())
+    result = await commander.set_temperature(22.3)  # -> 22.5 C, byte 45
+    await task
+
+    assert transport.writes == [(COMMAND_UUID, bytes([0x03, 45]))]
+    assert result.after.target_temp_c == 22.5

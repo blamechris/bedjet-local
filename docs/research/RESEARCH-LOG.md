@@ -1046,3 +1046,48 @@ operand. OFF proved the opcode and that the command enum exists; it did not test
 other value in that enum. Cool (`01 02`) and Dry (`01 05`) are the thermally safe ones and go
 first. Heat, turbo and extended heat stay locked — they are the commands that make heat, and
 they come last and attended, per `SAFETY.md`.
+
+---
+
+## RL-021 — Command `01 02` starts the unit cooling; the enum offset demonstrated live
+
+**Date:** 2026-08-16
+**Question:** Does a mode operand other than OFF work, and does it produce the *status* value
+RL-014 predicts rather than the command value?
+**Setup:** Unit in standby. `bedjet mode … cool` → wrote `01 02`.
+**Observation:**
+
+```
+before: power=off  mode=standby  target=19.0C  fan=100% (last set)
+after:  power=on   mode=cool     target=19.0C  fan=100%   remaining=10:00:00
+```
+
+**Interpretation:**
+
+**✅ Command `0x02` = COOL is VERIFIED**, and this is the first time we have *started* the
+device rather than stopped or adjusted it.
+
+**The enum offset is now demonstrated rather than inferred.** We sent command `0x02`; the
+device reported status `0x04`. Both mean cool. Every earlier statement about the two enums came
+from comparing captures against what the vendor app was set to — this is the first time a
+*command* and its resulting *status* were observed in the same exchange, and they differ
+exactly as predicted. A verifier that compared the command byte to the status byte would have
+failed a device that did precisely the right thing.
+
+**✅ Starting a mode sets a fresh 10:00:00 timer.** The unit went from standby to a full
+10-hour session. Pair that with RL-020's finding that a fan change leaves the timer alone, and
+the rule appears to be: **changing the mode starts a session; adjusting within a session does
+not.** Note also that cool's *maximum* runtime is 12:00 (RL-013) while its default session is
+10:00 — the two are different numbers and both are reported.
+
+**Three opcodes' worth of the command table is now proven:** `01 01` off, `01 02` cool,
+`07 <step>` fan. The remaining gaps are temperature (`03`), timer (`02`), presets, and the
+heating modes — the last deliberately so.
+**Confidence:** high
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** —
+**Next question:** temperature (`03 <temp>`), the last substantial non-heating command. It is
+safe to test **in cool mode**, where the device reports a permitted range of 19.0–26.0 °C and
+enforces it — setting a cool target cannot make the bed hotter. It is also the first command
+whose operand is not a small enum but an encoded *value*, so it tests the temperature encoding
+from the write side, exactly as RL-020 did for the fan mapping.

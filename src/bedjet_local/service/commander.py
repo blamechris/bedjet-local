@@ -16,8 +16,9 @@ checksum** — RL-017, where a corrupt fragment reported a heater as switched of
 
 - ✅ ``send_off`` — `01 01`, VERIFIED (RL-019, reproduced RL-020)
 - ✅ ``set_fan_percent`` — `07 <step>`, VERIFIED (RL-020)
-- 📖 ``set_mode`` — `01 <mode>`, restricted to the **thermally safe** operands; the modes
-  that make heat are refused in code, not merely by convention
+- ✅ ``set_mode`` — `01 <mode>`, COOL VERIFIED (RL-021); restricted to the **thermally safe**
+  operands, with the modes that make heat refused in code rather than by convention
+- 📖 ``set_temperature`` — `03 <temp>`, bounded by the device's own reported range
 """
 
 from __future__ import annotations
@@ -29,7 +30,13 @@ from dataclasses import dataclass
 
 from ..device.state import BedJetState, Power
 from ..protocol import encode
-from ..protocol.constants import COMMAND_UUID, CommandMode, StatusMode
+from ..protocol.constants import (
+    COMMAND_UUID,
+    TEMP_SCALE,
+    CommandMode,
+    StatusMode,
+    c_to_f,
+)
 from ..protocol.packets import StatusPacket
 from ..transport.base import Transport
 from .reader import StatusReader
@@ -250,6 +257,45 @@ class Commander:
             encode.set_mode(mode),
             description=f"mode -> {mode.name.lower()}",
             satisfied=lambda state: state.mode is expected,
+            dry_run=dry_run,
+        )
+
+    async def set_temperature(self, celsius: float, *, dry_run: bool = False) -> CommandResult:
+        """📖 UNVERIFIED. `03 <temp>` — set the target temperature.
+
+        The permitted range comes from the **live status packet** (bytes 13-14), never from a
+        constant: RL-013 established that it moves with the mode, and that turbo's 43 °C
+        exceeds the 104 °F every public source calls the device maximum. Asking the device
+        what it accepts is both safer and more correct than any table we could write.
+
+        The wire encoding has 0.5 °C granularity, so the value actually sent may differ
+        slightly from the one requested. The rounded value is what gets verified, and callers
+        can read it back from the result — a request that quietly becomes a different
+        temperature is exactly the sort of thing that should be visible on a heater.
+        """
+        before_state, before_packet = await self.wait_for_state(self._settle_timeout)
+
+        if before_state.power is not Power.ON:
+            raise CommandRefused(
+                "the unit is not running, so a target change may not be observable. Start it "
+                "with `bedjet mode <address> cool` first."
+            )
+        if before_packet.min_temp_c is None or before_packet.max_temp_c is None:
+            raise CommandRefused(
+                "the device did not report its permitted range in the current status packet, "
+                "so there is nothing to bound the request against. Retry."
+            )
+
+        # Round to the wire's granularity BEFORE validating, so the value we check is the
+        # value we send.
+        rounded = round(celsius * TEMP_SCALE) / TEMP_SCALE
+        payload = encode.set_temperature(
+            rounded, min_c=before_packet.min_temp_c, max_c=before_packet.max_temp_c
+        )
+        return await self._send_verified(
+            payload,
+            description=f"target -> {rounded:.1f}C ({c_to_f(rounded):.1f}F)",
+            satisfied=lambda state: state.target_temp_c == rounded,
             dry_run=dry_run,
         )
 

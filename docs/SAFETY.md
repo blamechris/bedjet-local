@@ -60,7 +60,7 @@ Strictly sequential. Do not skip forward because an earlier step "obviously work
 | 11 | ✅ **DONE** — first write ever: **`01 01` — OFF**, via `bedjet off` (RL-019) | ✅ first write |
 | 12 | ~~Fan-only mode~~ — **no fan-only mode exists** in this device's status enum; skipped | — |
 | 13 | ✅ **DONE** — fan speed changes (RL-020) | ✅ |
-| 14 | Cool mode, then Dry — the thermally safe mode operands | ✅ |
+| 14 | ✅ **DONE** — Cool mode (RL-021). Dry available, untested | ✅ |
 | 15 | Heat mode, low target, short timer, **attended** | ✅ |
 | 16 | Timer and presets | ✅ |
 

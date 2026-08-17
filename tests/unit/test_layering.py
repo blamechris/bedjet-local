@@ -90,12 +90,13 @@ def test_only_the_commander_can_send() -> None:
 def test_the_write_path_constructs_only_unlocked_commands() -> None:
     """Commands are unlocked one at a time, in increasing order of consequence.
 
-    Unlocked so far: OFF (✅ RL-019), fan (✅ RL-020), mode restricted to the thermally
-    safe operands. Temperature, timer and button presses stay locked until the unlocked
-    ones have proven their framing on hardware.
+    Unlocked so far: OFF (✅ RL-019), fan (✅ RL-020), mode restricted to the thermally safe
+    operands (COOL ✅ RL-021), and temperature — which is bounded by the device's own
+    reported range and is therefore safe in a cooling mode. Timer and button presses stay
+    locked until the unlocked ones have proven their framing on hardware.
     """
     source = (SRC / "service" / "commander.py").read_text()
-    locked = ["set_temperature", "set_timer", "press("]
+    locked = ["set_timer", "press("]
     used = [name for name in locked if name in source]
     assert not used, (
         f"commander.py can now construct {used}. Verify the previously unlocked command on "

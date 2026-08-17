@@ -18,7 +18,13 @@ from pathlib import Path
 from .device import registry
 from .device.state import BedJetState
 from .protocol import encode
-from .protocol.constants import CHARACTERISTICS, NAME_UUID, SERVICE_UUID, CommandMode
+from .protocol.constants import (
+    CHARACTERISTICS,
+    NAME_UUID,
+    SERVICE_UUID,
+    CommandMode,
+    c_to_f,
+)
 from .protocol.packets import StatusPacket
 from .service.commander import (
     THERMALLY_SAFE_MODES,
@@ -464,6 +470,72 @@ async def cmd_mode(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_temp(args: argparse.Namespace) -> int:
+    """⚠️ WRITES. Set the target temperature and verify it. Bring-up step 14.
+
+    Bounded by the range the device reports for its *current* mode, so this is safe while
+    cooling and cannot be used to reach a heating target from a cooling mode.
+    """
+    _check_ownership(args)
+    celsius = args.value if args.celsius else (args.value - 32) * 5 / 9
+    transport = BleakTransport()
+    await transport.connect(args.address, timeout=args.timeout)
+    commander = Commander(transport, settle_timeout=args.settle)
+
+    try:
+        await commander.start()
+        before, packet = await commander.wait_for_state(args.settle)
+        print(f"\ncurrent state: {before.describe()}")
+        if packet.min_temp_c is not None and packet.max_temp_c is not None:
+            print(
+                f"device-reported range for this mode: {packet.min_temp_c:.1f}"
+                f"-{packet.max_temp_c:.1f}C "
+                f"({c_to_f(packet.min_temp_c):.0f}-{c_to_f(packet.max_temp_c):.0f}F)"
+            )
+
+        rounded = round(celsius * 2) / 2
+        if abs(rounded - celsius) > 0.01:
+            print(
+                f"\nnote: {celsius:.2f}C rounds to {rounded:.1f}C "
+                f"({c_to_f(rounded):.1f}F) — the wire has 0.5C granularity"
+            )
+
+        if args.dry_run:
+            result = await commander.set_temperature(celsius, dry_run=True)
+            print(f"\nDRY RUN — would write: {result.payload.hex(' ')}. Nothing was sent.")
+            return 0
+
+        if not args.yes:
+            print(
+                f"\n⚠️  This writes to the device. Target -> {rounded:.1f}C ({c_to_f(rounded):.1f}F)"
+            )
+            if input("\n    Type 'go' to send, anything else to abort: ").strip() != "go":
+                print("aborted — nothing was sent.")
+                return 1
+
+        result = await commander.set_temperature(celsius)
+    except CommandRefused as exc:
+        print(f"\n⛔ refused, nothing sent: {exc}")
+        return 1
+    except encode.CommandError as exc:
+        print(f"\n⛔ rejected before sending: {exc}")
+        return 1
+    except CommandUnverified as exc:
+        print(f"\n❌ UNVERIFIED: {exc}")
+        return 2
+    finally:
+        await commander.stop()
+        await transport.disconnect()
+        print("\nLink released — the vendor app can connect again.")
+
+    print("\n✅ verified: the device did what we asked.")
+    print(f"    sent:   {result.payload.hex(' ')}")
+    print(f"    before: {result.before.describe()}")
+    print(f"    after:  {result.after.describe()}")
+    print("\nOpcode 0x03 is now VERIFIED. Record it in docs/research/RESEARCH-LOG.md.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bedjet",
@@ -574,6 +646,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_mode.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p_mode.add_argument("--settle", type=float, default=10.0, metavar="S")
     p_mode.set_defaults(func=cmd_mode)
+
+    p_temp = sub.add_parser(
+        "temp",
+        help="⚠️ WRITES TO THE DEVICE. Set the target temperature and verify it (step 14)",
+    )
+    p_temp.add_argument("address")
+    p_temp.add_argument("value", type=float, help="target, in F unless --celsius is given")
+    p_temp.add_argument("--celsius", action="store_true", help="interpret value as C")
+    p_temp.add_argument("--timeout", type=float, default=20.0)
+    p_temp.add_argument("--force", action="store_true", help=force_help)
+    p_temp.add_argument("--dry-run", action="store_true", help="rehearse without writing")
+    p_temp.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p_temp.add_argument("--settle", type=float, default=10.0, metavar="S")
+    p_temp.set_defaults(func=cmd_temp)
 
     return parser
 
