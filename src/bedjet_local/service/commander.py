@@ -40,7 +40,7 @@ from ..protocol.constants import (
 )
 from ..protocol.packets import StatusPacket
 from ..transport.base import Transport
-from .reader import StatusReader
+from .reader import StateCallback, StatusReader
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +76,17 @@ THERMALLY_SAFE_MODES = UNLOCKED_MODES
 
 class CommandRefused(Exception):
     """The command was not sent, and the reason is not a device failure."""
+
+
+class AlreadySatisfied(CommandRefused):
+    """The device was already in the requested state, so nothing was sent.
+
+    Still a refusal — no bytes went out, and the caller must not be told the command was
+    verified, because nothing was verified. But it is the *benign* refusal, and an API
+    needs to tell it apart from the others structurally rather than by reading the message:
+    "turn it off" against an already-off heater is a satisfied request, whereas "the
+    baseline failed its checksum" is a fault. Both would otherwise be one exception type.
+    """
 
 
 class CommandUnverified(Exception):
@@ -116,20 +127,45 @@ class Commander:
     Args:
         transport: a connected transport.
         settle_timeout: how long to wait for the device to report the new state.
+        on_state: optional observer, called with every trustworthy state this commander
+            sees. It exists so that a long-running session can publish state without
+            opening a *second* subscription to the same characteristic — which would put
+            two follow-up reads in flight against one handle, the precise collision that
+            produced the corrupt fragment in RL-017.
     """
 
-    def __init__(self, transport: Transport, *, settle_timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        transport: Transport,
+        *,
+        settle_timeout: float = 10.0,
+        on_state: StateCallback | None = None,
+    ) -> None:
         self._transport = transport
         self._settle_timeout = settle_timeout
+        self._observer = on_state
         self._latest: tuple[BedJetState, StatusPacket] | None = None
         self._updated = asyncio.Event()
         self._reader = StatusReader(transport, self._on_state)
+
+    @property
+    def reader(self) -> StatusReader:
+        """The underlying reader, for its counters. Read-only by construction."""
+        return self._reader
 
     def _on_state(self, state: BedJetState, packet: StatusPacket) -> None:
         # The reader already drops untrustworthy packets, so anything arriving here has
         # passed its checksum. Both layers check anyway: this one guards a physical action.
         self._latest = (state, packet)
         self._updated.set()
+        if self._observer is not None:
+            # An observer that raises must not break command verification: this callback
+            # runs on the notification path, and the packet it is being handed is the same
+            # one a pending command is waiting on.
+            try:
+                self._observer(state, packet)
+            except Exception:
+                log.exception("a state observer raised; continuing")
 
     async def start(self) -> None:
         await self._reader.start()
@@ -183,7 +219,7 @@ class Commander:
             )
 
         if satisfied(before_state):
-            raise CommandRefused(
+            raise AlreadySatisfied(
                 f"the device already satisfies '{description}', so the write would be "
                 f"unobservable — and an unobservable command teaches us nothing while still "
                 f"being a write to a heater. Change the device first, then retry."

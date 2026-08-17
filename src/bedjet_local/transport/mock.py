@@ -87,6 +87,16 @@ class MockTransport:
         self._connected = False
         self._subs.clear()
 
+    def refuse_next_connects(self, count: int) -> None:
+        """Make the next ``count`` connection attempts fail.
+
+        ``fail_connects`` in the constructor only covers a device that is unreachable from
+        the start. A supervised session needs the other shape too — connected, then dropped,
+        then *unreachable for a while* — which is what an actual radio dip looks like and
+        the only way to observe backoff or a link that stays down.
+        """
+        self._fail_connects = self.connect_attempts + count
+
 
 async def mock_scan(_timeout: float = 10.0) -> list[DiscoveredDevice]:
     return [
