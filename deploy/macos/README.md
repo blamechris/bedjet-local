@@ -152,8 +152,11 @@ pkill -TERM -f "bedjet serve"
 ```
 
 That produces the clean shutdown — `SIGTERM received — releasing the link.` followed by
-`Link released — the vendor app can connect again.` — verified against the real device in
-RL-030. Confirm it before walking away:
+`Link released — the vendor app can connect again.` RL-030 verified that sequence against the
+real device by signalling the `uv` PID directly; the `pkill` form above was checked separately
+for pattern and delivery — it matches **both** the `uv` wrapper and the Python child, and each
+receives the signal. Confirm it anyway before walking away, because the point of this section is
+that a stop command returning 0 proves nothing:
 
 ```bash
 tail -5 ~/Library/Logs/bedjet-daemon.log
