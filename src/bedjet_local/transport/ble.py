@@ -1,9 +1,9 @@
 """Bleak-backed BLE transport. The only module in the project that imports ``bleak``.
 
-Milestone 1 scope: discover, connect, enumerate, read, subscribe. ``write`` is implemented
-because the interface requires it, but **nothing in this repository calls it yet** — see
-``docs/SAFETY.md``: the first write to the device is a deliberate, attended, logged event
-in Milestone 2, not a side effect of bring-up.
+Discover, connect, enumerate, read, subscribe, write. Connection establishment goes through
+``bleak-retry-connector`` (issue #1): a single ``connect()`` is a *sample* of a link that
+swings 22 dB while nothing moves (RL-010), and a daemon that gives up on the first refusal
+is a daemon that is offline every time the radio dips.
 """
 
 from __future__ import annotations
@@ -11,13 +11,26 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from bleak import BleakClient, BleakScanner
-from bleak.exc import BleakDeviceNotFoundError, BleakError
+from bleak import BleakScanner
+from bleak.backends.device import BLEDevice
+from bleak.exc import BleakError
+from bleak_retry_connector import (
+    BleakAbortedError,
+    BleakClientWithServiceCache,
+    BleakNotFoundError,
+    BleakOutOfConnectionSlotsError,
+    establish_connection,
+)
 
 from ..protocol.constants import NAME_PREFIXES, SERVICE_UUID
 from .base import DiscoveredDevice, NotifyCallback, TransportError
 
 log = logging.getLogger(__name__)
+
+#: How many times ``establish_connection`` may try before giving up. Four is the library's
+#: own default and it is chosen for exactly our failure mode: transient BLE refusals that
+#: succeed on a retry seconds later.
+DEFAULT_CONNECT_ATTEMPTS = 4
 
 
 async def scan(timeout: float = 10.0, *, all_devices: bool = False) -> list[DiscoveredDevice]:
@@ -63,8 +76,9 @@ async def scan(timeout: float = 10.0, *, all_devices: bool = False) -> list[Disc
 class BleakTransport:
     """A :class:`~bedjet_local.transport.base.Transport` backed by a local BLE adapter."""
 
-    def __init__(self) -> None:
-        self._client: BleakClient | None = None
+    def __init__(self, *, max_attempts: int = DEFAULT_CONNECT_ATTEMPTS) -> None:
+        self._client: BleakClientWithServiceCache | None = None
+        self._max_attempts = max_attempts
         # Bleak's CoreBluetooth backend keys pending GATT operations by characteristic
         # handle, so two overlapping reads of the same characteristic collide: one
         # cancels the other's future and they can return each other's data. That is how a
@@ -76,37 +90,94 @@ class BleakTransport:
     def is_connected(self) -> bool:
         return self._client is not None and self._client.is_connected
 
+    async def _resolve(self, address: str, timeout: float) -> BLEDevice:
+        """Turn an address into a live ``BLEDevice``, or explain why we cannot.
+
+        ``establish_connection`` wants a device object rather than an address, which turns
+        out to be the better shape anyway: "did not appear in a scan" and "appeared but
+        refused the link" become two separate outcomes at the point where they differ,
+        instead of two exception types we have to tell apart afterwards (RL-009).
+        """
+        device = await BleakScanner.find_device_by_address(address, timeout=timeout)
+        if device is not None:
+            return device
+        raise TransportError(
+            f"{address} did not appear in a {timeout:.0f}s scan, so no connection was "
+            "attempted.\n"
+            "The device is not advertising. Common causes, cheapest first:\n"
+            "  · another client holds the link (the vendor app on a phone) — many BLE "
+            "peripherals stop advertising while connected\n"
+            "  · the unit lost power, or has gone into a deep idle\n"
+            "  · it is out of range, or the radio path changed\n"
+            "  · on macOS this address is a host-local CoreBluetooth UUID; if the "
+            "device rotated its BLE address, macOS may now know it under a different "
+            "one (see RL-009) — re-run `bedjet discover`"
+        )
+
     async def connect(self, address: str, *, timeout: float = 20.0) -> None:
-        log.info("connecting to %s (timeout %.1fs)", address, timeout)
-        client = BleakClient(address, timeout=timeout)
+        """Connect, retrying transient failures.
+
+        ``timeout`` bounds the *scan* that resolves the address. The per-attempt connect
+        timeout and the backoff between attempts belong to ``bleak-retry-connector``, which
+        varies them by error class — a link that is out of connection slots wants a
+        different wait from one that timed out.
+
+        **The GATT service cache is deliberately disabled.** It would let a reconnect skip
+        service discovery, and the write path decides *with-response vs without-response*
+        from the command characteristic's declared properties. A stale cached property
+        table is therefore the one thing that could silently resurrect RL-018 — every
+        command accepted by the radio and discarded before it reached the device. Rediscovery
+        costs a fraction of a second on a link we hold for hours.
+        """
+        log.info(
+            "connecting to %s (scan timeout %.1fs, up to %d attempt(s))",
+            address,
+            timeout,
+            self._max_attempts,
+        )
+        device = await self._resolve(address, timeout)
         try:
-            await client.connect()
-        except BleakDeviceNotFoundError as exc:
-            # NOT a refused connection: bleak resolves an address by scanning first, and
-            # this means the device never appeared. Conflating the two sends the reader to
-            # entirely the wrong problem (RL-009), so they get separate messages.
+            client = await establish_connection(
+                BleakClientWithServiceCache,
+                device,
+                device.name or address,
+                max_attempts=self._max_attempts,
+                use_services_cache=False,
+                disconnected_callback=self._on_disconnected,
+            )
+        except BleakNotFoundError as exc:
+            # It advertised for the scan and was gone by the time we reached for it. Not
+            # the same as never having appeared, and not the same as a refusal.
             raise TransportError(
-                f"{address} did not appear in a {timeout:.0f}s scan, so no connection was "
-                "attempted.\n"
-                "The device is not advertising. Common causes, cheapest first:\n"
-                "  · another client holds the link (the vendor app on a phone) — many BLE "
-                "peripherals stop advertising while connected\n"
-                "  · the unit lost power, or has gone into a deep idle\n"
-                "  · it is out of range, or the radio path changed\n"
-                "  · on macOS this address is a host-local CoreBluetooth UUID; if the "
-                "device rotated its BLE address, macOS may now know it under a different "
-                "one (see RL-009) — re-run `bedjet discover`"
+                f"{address} was found by the scan but had disappeared by the time we "
+                f"connected, after {self._max_attempts} attempt(s): {exc}. The link is "
+                "marginal — run `bedjet discover --repeat 5` and judge the RSSI spread "
+                "(RL-010)."
             ) from exc
-        except BleakError as exc:
-            # Found, but the link was refused or dropped. The BedJet permits exactly one
-            # BLE client at a time, which is the usual reason.
+        except BleakOutOfConnectionSlotsError as exc:
             raise TransportError(
-                f"could not connect to {address}: {exc}. "
-                "The device was found but refused the link. The BedJet allows only one BLE "
-                "client at a time — check that the vendor app is not connected."
+                f"the Bluetooth adapter is out of connection slots: {exc}. Something else "
+                "on this host is holding BLE connections open."
+            ) from exc
+        except (BleakAbortedError, BleakError) as exc:
+            # Found, but the link was refused or dropped, and retries did not help. The
+            # BedJet permits exactly one BLE client at a time, which is the usual reason.
+            raise TransportError(
+                f"could not connect to {address} after {self._max_attempts} attempt(s): "
+                f"{exc}. The device was found but refused the link. The BedJet allows only "
+                "one BLE client at a time — check that the vendor app is not connected."
             ) from exc
         self._client = client
         log.info("connected to %s", address)
+
+    def _on_disconnected(self, _client: object) -> None:
+        """Called by bleak when the link drops, expectedly or otherwise.
+
+        Log only. Reconnection is the service layer's decision, not the transport's: this
+        object has no idea whether the disconnect was a fault or a deliberate yield of the
+        device's single BLE slot back to its owner.
+        """
+        log.warning("BLE link dropped")
 
     async def disconnect(self) -> None:
         if self._client is not None:
@@ -114,7 +185,7 @@ class BleakTransport:
             log.info("disconnected")
             self._client = None
 
-    def _require(self) -> BleakClient:
+    def _require(self) -> BleakClientWithServiceCache:
         if self._client is None or not self._client.is_connected:
             raise TransportError("not connected")
         return self._client
