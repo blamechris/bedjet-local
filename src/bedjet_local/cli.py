@@ -18,7 +18,9 @@ import asyncio
 import contextlib
 import logging
 import os
+import signal
 import sys
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -545,6 +547,65 @@ async def cmd_temp(args: argparse.Namespace) -> int:
     return 0
 
 
+_SHUTDOWN_GRACE_S = 10.0
+
+
+@contextlib.asynccontextmanager
+async def _stop_signals() -> AsyncIterator[asyncio.Event]:
+    """An event set by SIGTERM or SIGINT, so both stop a daemon the same way.
+
+    Ctrl-C raises ``KeyboardInterrupt``; SIGTERM does not. Python's default action for
+    SIGTERM terminates the process outright, skipping every ``finally`` on the way out —
+    which is harmless for a command that borrows the link and wrong for a daemon that holds
+    it, because SIGTERM is precisely what ``launchctl bootout``, any process supervisor, and
+    a reboot all send. Left unhandled, the one shutdown path with nobody watching is the one
+    that never releases the device.
+    """
+    loop = asyncio.get_running_loop()
+    stopping = asyncio.Event()
+
+    def _received(sig: signal.Signals) -> None:
+        print(f"\n{sig.name} received — releasing the link.")
+        stopping.set()
+
+    installed: list[signal.Signals] = []
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, _received, sig)
+        except (NotImplementedError, RuntimeError):
+            # Not a Unix event loop. Ctrl-C still arrives as KeyboardInterrupt, and SIGTERM
+            # keeps its default behaviour — no worse than before, and not worth refusing to
+            # start over.
+            continue
+        installed.append(sig)
+    try:
+        yield stopping
+    finally:
+        for sig in installed:
+            loop.remove_signal_handler(sig)
+
+
+async def _release(*closers: Callable[[], Awaitable[object]]) -> None:
+    """Run the shutdown steps, and never take longer than the grace period doing it.
+
+    A supervisor that sent SIGTERM sends SIGKILL shortly after — launchd's default is 20
+    seconds — so a graceful release that hangs is strictly worse than an abrupt one: it
+    burns the window and gets killed anyway, having reported nothing. Bounding it keeps the
+    ordinary case clean without betting the shutdown on a BLE call that may never return.
+    """
+    try:
+        async with asyncio.timeout(_SHUTDOWN_GRACE_S):
+            for close in closers:
+                await close()
+    except TimeoutError:
+        print(
+            f"\n⚠️  Shutdown exceeded {_SHUTDOWN_GRACE_S:.0f}s and was abandoned. The OS "
+            "releases the link when this process exits, but the device was not told."
+        )
+        return
+    print("\nLink released — the vendor app can connect again.")
+
+
 async def cmd_serve(args: argparse.Namespace) -> int:
     """⚠️ HOLDS THE LINK AND CAN WRITE. Run the local API daemon (Milestone 3).
 
@@ -594,17 +655,15 @@ async def cmd_serve(args: argparse.Namespace) -> int:
         f"      curl -X POST http://{config.host}:{config.port}/api/v1/link/yield "
         "-d '{\"seconds\": 300}'\n"
     )
-    print("Ctrl-C to stop.\n")
+    print("Ctrl-C or SIGTERM to stop.\n")
 
-    try:
-        while True:
-            await asyncio.sleep(3600)
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        pass
-    finally:
-        await runner.cleanup()
-        await session.stop()
-        print("\nLink released — the vendor app can connect again.")
+    async with _stop_signals() as stopping:
+        try:
+            await stopping.wait()
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            pass
+        finally:
+            await _release(runner.cleanup, session.stop)
     return 0
 
 
@@ -648,19 +707,28 @@ async def cmd_mqtt(args: argparse.Namespace) -> int:
         "\n⚠️  This process holds the BedJet's only BLE slot. To hand the device back for "
         f"five minutes:\n      mosquitto_pub -t {config.command_topic('link_yield')} -m 300\n"
     )
-    print("Ctrl-C to stop.\n")
+    print("Ctrl-C or SIGTERM to stop.\n")
 
     task = asyncio.create_task(bridge.run())
-    try:
-        await task
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        pass
-    finally:
+
+    async def _drain_bridge() -> None:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
-        await session.stop()
-        print("\nLink released — the vendor app can connect again.")
+
+    async with _stop_signals() as stopping:
+        stop_wait = asyncio.create_task(stopping.wait())
+        try:
+            done, _ = await asyncio.wait({task, stop_wait}, return_when=asyncio.FIRST_COMPLETED)
+            if task in done:
+                # The bridge ended on its own. Surface why, as it did before signals
+                # were handled here — a broker that went away is not a clean stop.
+                await task
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            pass
+        finally:
+            stop_wait.cancel()
+            await _release(_drain_bridge, session.stop)
     return 0
 
 
