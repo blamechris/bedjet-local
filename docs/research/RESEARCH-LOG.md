@@ -996,3 +996,53 @@ was in flight. Harmless — the device repeats constantly and we still verified 
 second — but it suggests the notification-plus-read dance is doing more work than needed. The
 status characteristic is directly readable, so polling a whole packet may be simpler and
 cheaper than reassembling one. Worth measuring, not urgent.
+
+---
+
+## RL-020 — Opcode `0x07` verified; the fan mapping confirmed from the *write* side
+
+**Date:** 2026-08-16
+**Question:** Does `07 <step>` set fan speed, and does a second opcode behave like the first?
+**Setup:** Unit running Cool at fan 50 % via the app, app force-closed.
+`bedjet fan … 100` → wrote `07 13` (step 19). Then `bedjet off` again, to check reproducibility.
+**Observation:**
+
+```
+fan:  before fan=50%   → after fan=100%   (4 s later, timer undisturbed)
+off:  before mode=cool → after mode=standby
+```
+
+Both verified. The operator also **heard** the fan change — a second channel of confirmation
+the software cannot fabricate.
+
+**Interpretation:**
+
+**✅ Opcode `0x07` (set fan) is VERIFIED.** Two opcodes now proven, which matters more than
+one: it establishes that `[opcode, operand]` is a general framing rather than a coincidence
+that happened to work for a single command.
+
+**✅ The fan-step mapping is now confirmed from the write side too.** RL-002 established
+`percent = 5 + 5 × step` by *reading* byte 10 with the app set to 50 %. Here we *sent* step 19
+and the device reported 100 %. Read-side and write-side agree, using the same formula in
+opposite directions — a much stronger result than either alone, and the kind of round-trip
+that catches an off-by-one that a one-directional test would miss.
+
+**✅ OFF is reproducible.** Second independent confirmation, on a different starting state
+(fan 100 % rather than 50 %). A command that has worked once could be a coincidence of timing;
+twice, from different states, is a behaviour.
+
+**Also observed:** the fan change did **not** reset the run timer (9:59:40 → 9:59:36, i.e. it
+just kept counting). Changing fan speed is not treated as starting a new session. Worth knowing
+before anything builds scheduling on top.
+
+Each run discarded 1–2 untrustworthy packets, quietly and correctly. That the checksum gate
+fires routinely — and that nothing downstream ever sees those packets — is the RL-017 fix
+earning its keep in normal operation rather than only in the failure that produced it.
+**Confidence:** high
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** —
+**Next question:** command #3 by the bring-up order: **mode** (`01 <mode>`) with a non-OFF
+operand. OFF proved the opcode and that the command enum exists; it did not test a single
+other value in that enum. Cool (`01 02`) and Dry (`01 05`) are the thermally safe ones and go
+first. Heat, turbo and extended heat stay locked — they are the commands that make heat, and
+they come last and attended, per `SAFETY.md`.

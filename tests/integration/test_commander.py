@@ -13,7 +13,12 @@ import asyncio
 import pytest
 
 from bedjet_local.device.state import Power
-from bedjet_local.protocol.constants import COMMAND_UUID, STATUS_UUID, StatusMode
+from bedjet_local.protocol.constants import (
+    COMMAND_UUID,
+    STATUS_UUID,
+    CommandMode,
+    StatusMode,
+)
 from bedjet_local.service.commander import Commander, CommandRefused, CommandUnverified
 from bedjet_local.transport.mock import MockTransport
 from tests.unit.test_decode import build_status
@@ -183,3 +188,47 @@ async def test_set_fan_is_unverified_when_the_device_ignores_it() -> None:
     with pytest.raises(CommandUnverified, match="fan -> 100%"):
         await commander.set_fan_percent(100)
     assert transport.writes, "the write happened; only the effect is unconfirmed"
+
+
+# ── Command #3: mode, thermally safe operands only ──────────────────────────────────────
+
+
+async def test_set_mode_cool_writes_the_command_value_and_verifies_the_status_value() -> None:
+    """RL-014 in one test: the enums differ, so verification cannot compare byte to byte.
+
+    We send command COOL (`0x02`) and expect status COOL (`0x04`). Comparing the command
+    value against the status byte would fail on a device that did exactly the right thing.
+    """
+    transport = MockTransport()
+    commander = await _armed(transport, STANDBY)
+
+    async def respond() -> None:
+        await asyncio.sleep(0)
+        transport.emit(STATUS_UUID, build_status(mode=StatusMode.COOL))
+
+    task = asyncio.create_task(respond())
+    result = await commander.set_mode(CommandMode.COOL)
+    await task
+
+    assert transport.writes == [(COMMAND_UUID, bytes([0x01, 0x02]))]
+    assert result.after.mode is StatusMode.COOL
+
+
+@pytest.mark.parametrize("mode", [CommandMode.HEAT, CommandMode.TURBO, CommandMode.EXTENDED_HEAT])
+async def test_set_mode_refuses_the_heating_modes(mode: CommandMode) -> None:
+    """The commands that make heat are refused in code. Nothing reaches the device."""
+    transport = MockTransport()
+    commander = await _armed(transport, STANDBY)
+
+    with pytest.raises(CommandRefused, match="THERMALLY_SAFE_MODES"):
+        await commander.set_mode(mode)
+    assert transport.writes == []
+
+
+async def test_set_mode_refuses_when_already_in_that_mode() -> None:
+    transport = MockTransport()
+    commander = await _armed(transport, RUNNING)
+
+    with pytest.raises(CommandRefused, match="already satisfies"):
+        await commander.set_mode(CommandMode.COOL)
+    assert transport.writes == []

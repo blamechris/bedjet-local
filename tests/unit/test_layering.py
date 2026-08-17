@@ -87,30 +87,40 @@ def test_only_the_commander_can_send() -> None:
     )
 
 
-#: Commands the write path is allowed to construct, in the order they were unlocked. A
-#: command joins this list only once the previous one is VERIFIED on hardware — see
-#: docs/SAFETY.md's bring-up order. Widening it is a safety decision, made here in the open.
-UNLOCKED_COMMANDS = {
-    "turn_off",  # ✅ VERIFIED RL-019
-    "set_fan_percent",  # 📖 unverified — thermally inert, next in the bring-up order
-}
-
-
 def test_the_write_path_constructs_only_unlocked_commands() -> None:
-    """Commands are verified one at a time, in increasing order of consequence.
+    """Commands are unlocked one at a time, in increasing order of consequence.
 
-    Every command byte started as unverified upstream guesswork (RL-016). Temperature and
-    heat are the consequential ones and stay locked until the inert ones have proven the
-    opcode framing.
+    Unlocked so far: OFF (✅ RL-019), fan (✅ RL-020), mode restricted to the thermally
+    safe operands. Temperature, timer and button presses stay locked until the unlocked
+    ones have proven their framing on hardware.
     """
     source = (SRC / "service" / "commander.py").read_text()
-    locked = ["set_temperature", "set_timer", "set_mode(", "press("]
+    locked = ["set_temperature", "set_timer", "press("]
     used = [name for name in locked if name in source]
     assert not used, (
-        f"commander.py can now construct {used}, which is not in UNLOCKED_COMMANDS. Verify "
-        f"the previous command on hardware first, then unlock this one deliberately."
+        f"commander.py can now construct {used}. Verify the previously unlocked command on "
+        f"hardware first, then unlock this one deliberately, in its own commit."
     )
-    assert "turn_off" in source
+
+
+def test_the_heating_modes_cannot_be_sent() -> None:
+    """The commands that make heat are refused in code, not by convention.
+
+    `SAFETY.md` puts heat last and attended. A frozenset that has to be edited to send one
+    is a far better guard than a comment asking politely — and this asserts the actual
+    object the sender consults, not a string in a file.
+
+    Note what this is NOT about: none of these values is suspected wrong. OFF proved the
+    enum is real. The restriction is about consequence, not confidence.
+    """
+    from bedjet_local.protocol.constants import CommandMode
+    from bedjet_local.service.commander import THERMALLY_SAFE_MODES
+
+    for mode in (CommandMode.HEAT, CommandMode.TURBO, CommandMode.EXTENDED_HEAT):
+        assert mode not in THERMALLY_SAFE_MODES, f"{mode.name} must stay locked"
+
+    assert CommandMode.OFF in THERMALLY_SAFE_MODES
+    assert CommandMode.COOL in THERMALLY_SAFE_MODES
 
 
 def test_encoder_is_pure() -> None:

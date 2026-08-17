@@ -58,9 +58,9 @@ Strictly sequential. Do not skip forward because an earlier step "obviously work
 | 10 | **Validate decoded state against a known state set in the vendor app** | no |
 | — | ⬆ **Milestone 1 ends here. Everything above is read-only.** | |
 | 11 | ✅ **DONE** — first write ever: **`01 01` — OFF**, via `bedjet off` (RL-019) | ✅ first write |
-| 12 | Fan-only mode at low speed | ✅ |
-| 13 | Fan speed changes | ✅ |
-| 14 | Cool mode | ✅ |
+| 12 | ~~Fan-only mode~~ — **no fan-only mode exists** in this device's status enum; skipped | — |
+| 13 | ✅ **DONE** — fan speed changes (RL-020) | ✅ |
+| 14 | Cool mode, then Dry — the thermally safe mode operands | ✅ |
 | 15 | Heat mode, low target, short timer, **attended** | ✅ |
 | 16 | Timer and presets | ✅ |
 

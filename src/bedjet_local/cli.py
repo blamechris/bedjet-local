@@ -18,9 +18,14 @@ from pathlib import Path
 from .device import registry
 from .device.state import BedJetState
 from .protocol import encode
-from .protocol.constants import CHARACTERISTICS, NAME_UUID, SERVICE_UUID
+from .protocol.constants import CHARACTERISTICS, NAME_UUID, SERVICE_UUID, CommandMode
 from .protocol.packets import StatusPacket
-from .service.commander import Commander, CommandRefused, CommandUnverified
+from .service.commander import (
+    THERMALLY_SAFE_MODES,
+    Commander,
+    CommandRefused,
+    CommandUnverified,
+)
 from .service.reader import StatusReader
 from .transport.base import DiscoveredDevice
 from .transport.ble import BleakTransport, scan
@@ -403,6 +408,62 @@ async def cmd_fan(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_mode(args: argparse.Namespace) -> int:
+    """⚠️ WRITES. Select a mode and verify it took effect. Bring-up step 14.
+
+    Only the thermally safe operands are available: the heating modes are refused by
+    ``Commander`` itself, not merely absent from this parser.
+    """
+    _check_ownership(args)
+    mode = CommandMode[args.mode.upper()]
+    transport = BleakTransport()
+    await transport.connect(args.address, timeout=args.timeout)
+    commander = Commander(transport, settle_timeout=args.settle)
+
+    try:
+        await commander.start()
+        before, _ = await commander.wait_for_state(args.settle)
+        print(f"\ncurrent state: {before.describe()}")
+
+        if args.dry_run:
+            result = await commander.set_mode(mode, dry_run=True)
+            print(f"\nDRY RUN — would write: {result.payload.hex(' ')}. Nothing was sent.")
+            return 0
+
+        if not args.yes:
+            payload = encode.set_mode(mode)
+            print(
+                f"\n⚠️  This writes to the device. About to send: {payload.hex(' ')}  "
+                f"(mode -> {mode.name.lower()})"
+            )
+            if input("\n    Type 'go' to send, anything else to abort: ").strip() != "go":
+                print("aborted — nothing was sent.")
+                return 1
+
+        result = await commander.set_mode(mode)
+    except CommandRefused as exc:
+        print(f"\n⛔ refused, nothing sent: {exc}")
+        return 1
+    except CommandUnverified as exc:
+        print(f"\n❌ UNVERIFIED: {exc}")
+        return 2
+    finally:
+        await commander.stop()
+        await transport.disconnect()
+        print("\nLink released — the vendor app can connect again.")
+
+    print("\n✅ verified: the device did what we asked.")
+    print(f"    sent:   {result.payload.hex(' ')}  (command {mode.name})")
+    print(f"    before: {result.before.describe()}")
+    print(f"    after:  {result.after.describe()}")
+    print(
+        f"\nCommand mode {mode.name} (0x{int(mode):02x}) is now VERIFIED — and note it "
+        f"produced\nstatus mode {result.after.mode.name if result.after.mode else '?'}, a "
+        f"different value. Record it in the research log."
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bedjet",
@@ -497,6 +558,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_fan.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p_fan.add_argument("--settle", type=float, default=10.0, metavar="S")
     p_fan.set_defaults(func=cmd_fan)
+
+    p_mode = sub.add_parser(
+        "mode", help="⚠️ WRITES TO THE DEVICE. Select a thermally safe mode (step 14)"
+    )
+    p_mode.add_argument("address")
+    p_mode.add_argument(
+        "mode",
+        choices=sorted(m.name.lower() for m in THERMALLY_SAFE_MODES),
+        help="heating modes are deliberately unavailable — see docs/SAFETY.md",
+    )
+    p_mode.add_argument("--timeout", type=float, default=20.0)
+    p_mode.add_argument("--force", action="store_true", help=force_help)
+    p_mode.add_argument("--dry-run", action="store_true", help="rehearse without writing")
+    p_mode.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p_mode.add_argument("--settle", type=float, default=10.0, metavar="S")
+    p_mode.set_defaults(func=cmd_mode)
 
     return parser
 

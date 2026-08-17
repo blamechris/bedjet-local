@@ -227,11 +227,18 @@ same characteristic. ✅ VERIFIED — 55 notifications in ~60 s, each reassembli
 
 | Bytes | Command | Provenance | Confidence |
 |---|---|---|---|
-| **`01 01`** | **Off** | ✅ **VERIFIED 2026-08-16 (RL-019)** — sent; the unit switched off | high |
-| `01 <mode>` | Set mode / button | 📖 MQTT bridge; the `01` opcode and the framing are now verified | medium |
-| `02 <hh> <mm>` | Set timer | 📖 MQTT bridge | medium |
-| `03 <temp>` | Set target temperature (`2 × °C`) | 📖 MQTT bridge | medium |
-| `07 <step>` | Set fan speed (step index) | 📖 MQTT bridge | medium |
+| **`01 01`** | **Off** | ✅ **VERIFIED (RL-019, reproduced RL-020)** — the unit switched off | high |
+| **`07 <step>`** | **Set fan speed** | ✅ **VERIFIED (RL-020)** — sent `07 13`, fan went 50 % → 100 %, audibly | high |
+| `01 <mode>` | Set mode, other operands | 📖 the `01` opcode and the framing are verified; **no other mode value has been tested** | medium |
+| `02 <hh> <mm>` | Set timer | 📖 MQTT bridge, untested | medium |
+| `03 <temp>` | Set target temperature (`2 × °C`) | 📖 MQTT bridge, untested | medium |
+
+Two opcodes verified is worth more than one: it establishes `[opcode, operand]` as a general
+framing rather than a coincidence that happened to work once.
+
+The fan result also confirms the step mapping **from the write side** — RL-002 derived
+`percent = 5 + 5 × step` by reading byte 10; RL-020 sent step 19 and read back 100 %. The same
+formula verified in both directions catches off-by-ones that a one-directional test cannot.
 | — | Set clock (`CMD_SET_CLOCK`, `<hh> <mm>`) | 📖 ESPHome — opcode not yet established | low |
 
 ### Mode / button values (operand of `0x01`)

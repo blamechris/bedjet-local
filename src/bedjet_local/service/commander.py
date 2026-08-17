@@ -14,8 +14,10 @@ checksum** — RL-017, where a corrupt fragment reported a heater as switched of
 **Commands are verified one at a time**, in increasing order of consequence
 (`docs/SAFETY.md`), and each is added here only after the previous one is proven on hardware:
 
-- ✅ ``send_off`` — `01 01`, VERIFIED (RL-019)
-- ✅ ``set_fan_percent`` — `07 <step>`, thermally inert, exercises a different opcode
+- ✅ ``send_off`` — `01 01`, VERIFIED (RL-019, reproduced RL-020)
+- ✅ ``set_fan_percent`` — `07 <step>`, VERIFIED (RL-020)
+- 📖 ``set_mode`` — `01 <mode>`, restricted to the **thermally safe** operands; the modes
+  that make heat are refused in code, not merely by convention
 """
 
 from __future__ import annotations
@@ -27,12 +29,26 @@ from dataclasses import dataclass
 
 from ..device.state import BedJetState, Power
 from ..protocol import encode
-from ..protocol.constants import COMMAND_UUID, StatusMode
+from ..protocol.constants import COMMAND_UUID, CommandMode, StatusMode
 from ..protocol.packets import StatusPacket
 from ..transport.base import Transport
 from .reader import StatusReader
 
 log = logging.getLogger(__name__)
+
+
+#: Mode operands this module is permitted to send.
+#:
+#: OFF and COOL and DRY cannot make the bed hotter, so they are the ones to prove the mode
+#: enum with. HEAT, TURBO and EXTENDED_HEAT are deliberately absent: `SAFETY.md`'s bring-up
+#: order puts heat last and attended, and a list that has to be edited to send one is a much
+#: better guard than a comment asking politely.
+#:
+#: Note what is NOT the reason for this: none of these values is *suspected* wrong. OFF
+#: verified that the enum is real. The restriction is about consequence, not confidence.
+THERMALLY_SAFE_MODES = frozenset(
+    {CommandMode.OFF, CommandMode.COOL, CommandMode.DRY},
+)
 
 
 class CommandRefused(Exception):
@@ -46,6 +62,19 @@ class CommandUnverified(Exception):
     out, nothing observable happened, and we do not know whether the device ignored them,
     misunderstood them, or did something we are not looking at.
     """
+
+
+#: Which **status** mode a given **command** mode should produce.
+#:
+#: This mapping is the whole RL-014 finding in one table, and it is why verification cannot
+#: just compare a command byte to a status byte: they are different enums, and every value
+#: they share means something different in each. Command COOL is `0x02`; the cooling unit
+#: reports status `0x04`.
+_EXPECTED_STATUS_FOR = {
+    CommandMode.OFF: StatusMode.STANDBY,
+    CommandMode.COOL: StatusMode.COOL,
+    CommandMode.DRY: StatusMode.DRY,
+}
 
 
 @dataclass
@@ -192,6 +221,35 @@ class Commander:
             encode.turn_off(),
             description="mode -> off",
             satisfied=lambda state: state.mode is StatusMode.STANDBY or state.power is Power.OFF,
+            dry_run=dry_run,
+        )
+
+    async def set_mode(self, mode: CommandMode, *, dry_run: bool = False) -> CommandResult:
+        """📖 UNVERIFIED for every operand except OFF. `01 <mode>` — select a mode.
+
+        Only :data:`THERMALLY_SAFE_MODES` may be sent. Heat, turbo and extended heat are
+        refused here — in code — because they are the commands that make heat, and
+        `SAFETY.md` puts those last and attended.
+        """
+        if mode not in THERMALLY_SAFE_MODES:
+            raise CommandRefused(
+                f"{mode.name} is not in THERMALLY_SAFE_MODES. The heating modes come last "
+                f"and attended (docs/SAFETY.md) — unlock this one deliberately, in its own "
+                f"commit, once the safe operands have proven the mode enum."
+            )
+
+        expected = _EXPECTED_STATUS_FOR.get(mode)
+        if expected is None:
+            raise CommandRefused(
+                f"no verified status mode corresponds to command {mode.name}, so the result "
+                f"could not be verified even if it worked. Capture that mode from the vendor "
+                f"app first (RL-012)."
+            )
+
+        return await self._send_verified(
+            encode.set_mode(mode),
+            description=f"mode -> {mode.name.lower()}",
+            satisfied=lambda state: state.mode is expected,
             dry_run=dry_run,
         )
 
