@@ -153,3 +153,32 @@ async def test_stop_cancels_an_in_flight_read() -> None:
     await asyncio.sleep(0)
 
     await asyncio.wait_for(reader.stop(), timeout=1.0)
+
+
+# ── RL-018: the write type ──────────────────────────────────────────────────────────────
+
+
+async def test_commander_lets_the_transport_choose_the_write_type() -> None:
+    """RL-018. Every command we sent was discarded by the local Bluetooth stack.
+
+    BLE treats ``write`` and ``write-without-response`` as separate GATT properties. Our
+    command characteristic declares only ``write`` — i.e. write-*with*-response — and we
+    were defaulting to without-response, which CoreBluetooth silently drops. No error, no
+    exception, nothing on the wire.
+
+    The commander must not pin a write type: the transport picks it from the
+    characteristic's declared properties, because the device is the authority on what it
+    accepts. Same principle as the temperature bounds (RL-013).
+    """
+    transport = MockTransport()
+    await transport.connect("mock")
+    commander = Commander(transport, settle_timeout=0.2)
+    await commander.start()
+    transport.emit(STATUS_UUID, RUNNING)
+
+    with pytest.raises(CommandUnverified):
+        await commander.send_off()
+
+    assert transport.write_responses == [None], (
+        "the commander must leave the write type to the transport, not hardcode it"
+    )

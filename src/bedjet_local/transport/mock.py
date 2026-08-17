@@ -27,6 +27,7 @@ class MockTransport:
     ) -> None:
         self.reads = reads or {}
         self.writes: list[tuple[str, bytes]] = []
+        self.write_responses: list[bool | None] = []
         self.connect_attempts = 0
         self._fail_connects = fail_connects
         self._connected = False
@@ -56,9 +57,12 @@ class MockTransport:
             raise TransportError(f"no scripted read for {characteristic}")
         return self.reads[characteristic]
 
-    async def write(self, characteristic: str, data: bytes, *, response: bool = False) -> None:
+    async def write(
+        self, characteristic: str, data: bytes, *, response: bool | None = None
+    ) -> None:
         self._require()
         self.writes.append((characteristic, bytes(data)))
+        self.write_responses.append(response)
 
     async def subscribe(self, characteristic: str, callback: NotifyCallback) -> None:
         self._require()

@@ -873,3 +873,69 @@ informative: verified (the command table is right and only our plumbing was brok
 `CommandUnverified` (the device genuinely ignores `01 01`, and the command table is wrong —
 test `01 00` next, matching the status enum); or refused (the link is too poor to command
 safely, which is its own answer).
+
+---
+
+## RL-018 — `01 01` was never sent: wrong BLE write type, silently dropped
+
+**Date:** 2026-08-16
+**Question:** With RL-017's fixes in place, `bedjet off` failed honestly —
+`CommandUnverified`, the unit stayed in Cool, its timer ticking down normally. Is the command
+table wrong, or is something else?
+**Setup:** Unit running Cool / fan 100 % / target 66 °F via the app. `bedjet off`, retry after
+the RL-017 fixes. 81 packets, 43 split, **1 rejected**, 38 skipped while busy — the reader is
+now healthy, versus the corruption storm before.
+**Observation:** The write returned cleanly. Absolutely nothing changed: mode stayed `cool`,
+and the remaining timer went 9:59:43 → 9:59:23, i.e. the device carried on exactly as before.
+Not a refusal, not an error, not a partial effect — **no effect at all**.
+
+**Interpretation.** "No effect at all" is a strong clue, and it points away from the operand.
+
+Consider both readings of the byte we sent. Under the upstream *command* table, `01 01`
+means off. Under the *status* enum (RL-014), `0x01` means heat. **Neither happened.** A wrong
+mode value would have produced the *other* mode — that is precisely what makes the offset
+enums dangerous. Producing no change under either interpretation says the command never
+reached the device at all.
+
+And it did not. **BLE has two distinct write types, and they are separate GATT properties:**
+`write` means *write-with-response*; `write-without-response` is its own property. From
+RL-007, our command characteristic declares exactly:
+
+```
+char 00002004-bed0-0080-aa55-4265644a6574  [write]
+```
+
+Only `write`. No `write-without-response`. And `BleakTransport.write` defaulted to
+`response=False` — write-*without*-response. **CoreBluetooth silently discards a
+without-response write to a characteristic that does not support it.** No error, no
+exception, nothing on the wire. Our own log even said `WRITE … <- 01 01`, because the
+transport dutifully reported the call it made.
+
+So the command table is **not** exonerated or convicted; it was never tested. The bytes never
+left the Mac.
+
+**This is the same failure shape as RL-017 one layer down.** There, the read-back looked like
+verification but was not, because nothing checked the packet's integrity. Here, the write
+looked like a write but was not, because nothing checked the transport's own success. In both
+cases the code reported what it *did* rather than what *happened* — and the information needed
+to tell the difference was already in hand. RL-007 recorded `[write]` for this characteristic
+weeks of work ago; nothing consulted it.
+
+**Fix.** The transport now selects the write type from the characteristic's **declared
+properties** rather than a default, and callers pass `response=None` to mean "ask the device".
+This is the same principle as the temperature bounds in RL-013: the device publishes what it
+accepts, so ask it instead of assuming. `Commander` pins nothing, and a test asserts it never
+does.
+**Confidence:** high that the write type was wrong; the command table remains **untested**
+**Provenance:** ✅ VERIFIED (our device) for the no-op; ❓ for what `01 01` does when it
+actually arrives
+**Fixture:** —
+**Next question:** re-run `bedjet off`. This is the first time `01 01` will genuinely reach
+the device. If the unit switches off, the upstream command table is right and our transport
+was the whole problem. If it does not, the command table is finally, properly falsified — and
+the next candidate is `01 00`, matching the status enum's standby value.
+
+**Also worth recording — the RL-017 fixes worked.** One rejected packet instead of a
+corruption storm, no teardown tracebacks, and an honest `CommandUnverified` where the previous
+run produced a false "✅ verified". The failure was reported accurately, which is the only
+reason the real cause was findable.

@@ -125,10 +125,50 @@ class BleakTransport:
         log.debug("read  %s -> %s", characteristic, data.hex(" "))
         return data
 
-    async def write(self, characteristic: str, data: bytes, *, response: bool = False) -> None:
+    def _write_needs_response(self, characteristic: str) -> bool:
+        """Choose the write type from the characteristic's own declared properties.
+
+        BLE has two distinct write types, and they are separate GATT properties:
+        ``write`` means **write-with-response**, ``write-without-response`` is its own
+        property. A characteristic that declares only ``write`` does not accept
+        write-without-response — and CoreBluetooth **silently drops** such a write. No
+        error, no exception, nothing on the wire.
+
+        RL-018: our command characteristic (`…2004`) declares exactly ``[write]``, and we
+        were defaulting to without-response. Every command we sent was discarded by the
+        local Bluetooth stack before it ever reached the BedJet.
+
+        So this asks the device rather than assuming. Defaults to with-response when the
+        characteristic cannot be found: it is the safer of the two, since it is the type
+        that actually reports failure.
+        """
+        client = self._require()
+        for service in client.services:
+            for char in service.characteristics:
+                if char.uuid.lower() == characteristic.lower():
+                    props = {p.lower() for p in char.properties}
+                    return "write-without-response" not in props
+        return True
+
+    async def write(
+        self, characteristic: str, data: bytes, *, response: bool | None = None
+    ) -> None:
+        """Write to a characteristic.
+
+        ``response=None`` (the default) selects the write type from the characteristic's
+        declared properties, which is what you want — see :meth:`_write_needs_response`.
+        Pass an explicit bool only to override deliberately.
+        """
+        if response is None:
+            response = self._write_needs_response(characteristic)
         # Deliberately loud. Every write to this device is a physical event, and the log
         # is the record of what we asked a heater to do.
-        log.warning("WRITE %s <- %s", characteristic, data.hex(" "))
+        log.warning(
+            "WRITE %s <- %s (%s)",
+            characteristic,
+            data.hex(" "),
+            "with response" if response else "without response",
+        )
         async with self._gatt:
             await self._require().write_gatt_char(characteristic, data, response=response)
 

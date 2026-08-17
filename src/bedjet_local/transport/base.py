@@ -53,7 +53,17 @@ class Transport(Protocol):
 
     async def read(self, characteristic: str) -> bytes: ...
 
-    async def write(self, characteristic: str, data: bytes, *, response: bool = False) -> None: ...
+    async def write(
+        self, characteristic: str, data: bytes, *, response: bool | None = None
+    ) -> None:
+        """Write to a characteristic.
+
+        ``response=None`` means "choose from the characteristic's declared properties".
+        Defaulting to without-response is a trap: BLE treats ``write`` and
+        ``write-without-response`` as separate properties, and CoreBluetooth silently drops
+        a without-response write to a characteristic that only declares ``write`` (RL-018).
+        """
+        ...
 
     async def subscribe(self, characteristic: str, callback: NotifyCallback) -> None: ...
 
