@@ -39,23 +39,37 @@ async def test_reader_publishes_decoded_state() -> None:
     assert reader.packets_seen == 1
 
 
-async def test_unverified_mode_leaves_power_unknown_but_still_available() -> None:
+async def test_predicted_mode_still_leaves_power_unknown() -> None:
     """`available` (link) and `power` (device) are independent — the core state-model rule.
 
-    The standby/off status-mode value is not yet known (RL-012), so an unrecognised mode
-    must leave power UNKNOWN while availability stays True. Guessing "off" here would make
-    the daemon confidently wrong about a heater.
+    0x03 is *predicted* to be extended heat (RL-014) but has never been observed. A
+    prediction must not decode: it would be indistinguishable from a fact, and the daemon
+    would be confidently wrong about a heater on the strength of a pattern in four numbers.
     """
     transport = MockTransport()
     await transport.connect("mock")
     collector = Collector()
     await StatusReader(transport, collector).start()
 
-    transport.emit(STATUS_UUID, build_status(mode=0x01))
+    transport.emit(STATUS_UUID, build_status(mode=0x03))
 
     state = collector.states[0]
+    assert state.mode is None
     assert state.power is Power.UNKNOWN
     assert state.available is True
+    assert any("predicted" in e for e in state.errors), "the prediction should be surfaced"
+
+
+async def test_verified_heat_mode_reports_power_on() -> None:
+    transport = MockTransport()
+    await transport.connect("mock")
+    collector = Collector()
+    await StatusReader(transport, collector).start()
+
+    transport.emit(STATUS_UUID, build_status(mode=StatusMode.HEAT, target=63, max_temp=80))
+
+    assert collector.states[0].mode is StatusMode.HEAT
+    assert collector.states[0].power is Power.ON
 
 
 async def test_unknown_mode_leaves_power_unknown() -> None:

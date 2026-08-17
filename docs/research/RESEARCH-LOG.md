@@ -627,3 +627,62 @@ straight after a 50 % cool session). Reporting that as live airflow would be wro
 running (timer counting down) before force-closing the app. Then `dry`. Two more captures
 complete the status-mode table. A turbo capture past the 4-minute mark would also settle the
 byte 15–16 endianness question for free.
+
+---
+
+## RL-014 — Heat is `0x01`, and the mode table now makes a falsifiable prediction
+
+**Date:** 2026-08-16
+**Question:** What is heat's status-mode value? (The previous attempt captured a stopped unit.)
+**Setup:** Heat set in the vendor app and **confirmed running** — timer counting down — before
+force-closing the app. `bedjet watch --raw --packets 3 --seconds 60`.
+**Observation:**
+
+```
+01 56 1b 01 00 1d 28 3f 3f 01 13 0c 00 2d 50 00 00 2c 00 12 01 9a 01 10 ff 00 15 34 00 00 fb
+                     ^^ mode 0x01     ^^ ^^ range 22.5-40.0C
+```
+
+Mode `0x01`. Target 31.5 °C / 88.7 °F, actual equal to it (at temperature). Fan 100 %.
+Remaining 0:29:40 of a 12:00 maximum. Permitted range **22.5–40.0 °C (72.5–104.0 °F)** — a
+fourth distinct per-mode range. Checksum valid; the second packet's checksum incremented by
+exactly 1 as the seconds byte decremented by 1, which is a small extra confirmation of RL-013.
+
+**Interpretation:** The verified status-mode table is now:
+
+| Value | Mode | Command table calls it |
+|---|---|---|
+| `0x00` | standby | `0x01` = off |
+| `0x01` | **heat** | cool |
+| `0x02` | turbo | heat |
+| `0x04` | cool | turbo |
+
+Four values, a conspicuous gap at `0x03`, and they fit the ordering
+`standby, heat, turbo, extended-heat, cool, dry, …`. **That is a prediction:** `0x03` is
+extended heat and `0x05` is dry.
+
+It is recorded in `STATUS_MODE_PREDICTION` and deliberately **kept out of `StatusMode`**. A
+prediction that decodes silently is indistinguishable from a fact, and the whole discipline
+here is that those two must never be confusable — four numbers fitting a pattern is not
+evidence about a heater. The decoder surfaces the prediction in its anomaly message so the
+next capture can *refute* it. A `dry` capture is now a real experiment with a stated
+expectation rather than a data-gathering chore.
+
+Note also how badly the command table misleads: it calls `0x01` *cool*, and status `0x01` is
+*heat*. Decoding a heating unit with the command enum would have reported cooling. This is the
+third distinct way that conflation produces a confidently wrong answer.
+
+**Confidence:** high for `0x01` = heat; the prediction is explicitly low
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** `tests/fixtures/heat_fan100_target89f.bin`
+**Next question:** capture `dry` — it either confirms `0x05` and the ordering, or refutes both
+in one shot. Either outcome is worth more than the mode value itself, because it tells us
+whether the ordering hypothesis can be trusted for `0x03`, which we would otherwise have to
+reach by selecting extended heat.
+
+**Observability follow-up applied here:** the reader was logging an identical anomaly warning
+for every packet — several per second — and an INFO line per split packet, which made a real
+session unreadable and forced the operator to hold Ctrl-C. Anomalies are now logged only when
+the set changes, and the split-packet notice is logged once then dropped to debug. Combined
+with `watch`'s repeat collapsing and `--packets N`, a capture is now a short, readable run
+that ends on its own.

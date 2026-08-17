@@ -116,6 +116,19 @@ Two findings ride on this one. Turbo's target is **above the 104 °F everyone do
 maximum**, which is what proved the per-mode bounds are real and our hardcoded range was wrong.
 And `elapsed + remaining == max runtime` (13 + 587 = 600) is what identified bytes 15–16.
 
+### `heat_fan100_target89f.bin`
+
+| | |
+|---|---|
+| **Captured** | 2026-08-16, ~30 s into a heat run |
+| **Device state** | **Heat**, fan 100 %, target 89 °F, **timer confirmed counting down before the app was closed** |
+| **Bytes** | `01 56 1b 01 00 1d 28 3f 3f 01 13 0c 00 2d 50 00 00 2c 00 12 01 9a 01 10 ff 00 15 34 00 00 fb` |
+| **Expected** | mode `0x01` heat · target 31.5 °C / 88.7 °F · actual equal to target (at temperature) · permitted range 22.5–40.0 °C (72.5–104.0 °F) · max runtime 12:00 · remaining 0:29:40 |
+
+The retry of the capture that produced `off_after_heating.bin`. The difference was
+confirming the timer was running before releasing the link — a stopped unit reports standby
+no matter what mode is selected in the app.
+
 ---
 
 ## Checksum

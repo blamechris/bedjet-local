@@ -55,7 +55,7 @@ class BedJetState:
         # stays UNKNOWN rather than being guessed at.
         if packet.mode is StatusMode.STANDBY:
             power = Power.OFF
-        elif packet.mode in (StatusMode.COOL, StatusMode.TURBO):
+        elif packet.mode in (StatusMode.COOL, StatusMode.HEAT, StatusMode.TURBO):
             power = Power.ON
         else:
             power = Power.UNKNOWN

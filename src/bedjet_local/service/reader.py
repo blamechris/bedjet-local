@@ -35,6 +35,10 @@ class StatusReader:
         self._on_state = on_state
         self._pending_partial: bytes | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        # The device re-sends the same status several times a second, so logging every
+        # occurrence of an unchanged condition buries anything that actually changed.
+        self._last_anomalies: tuple[str, ...] | None = None
+        self._logged_split_notice = False
         self.packets_seen = 0
         self.partials_seen = 0
 
@@ -60,11 +64,18 @@ class StatusReader:
         # about itself is better evidence than a flag we only half understand.
         if not packet.is_complete:
             self.partials_seen += 1
-            log.info(
-                "incomplete packet (%d of %s bytes) — fetching remainder",
-                len(data),
-                packet.expected_total,
-            )
+            if not self._logged_split_notice:
+                # Expected on this device: every status arrives split. Say so once, then
+                # drop to debug — a per-packet INFO line is noise, not information.
+                log.info(
+                    "status packets arrive split (%d of %s bytes) — fetching the remainder; "
+                    "further occurrences at debug level",
+                    len(data),
+                    packet.expected_total,
+                )
+                self._logged_split_notice = True
+            else:
+                log.debug("incomplete packet (%d of %s bytes)", len(data), packet.expected_total)
             self._pending_partial = data
             if self._loop is not None:
                 self._loop.create_task(self._complete_partial(data))
@@ -83,6 +94,8 @@ class StatusReader:
 
     def _publish(self, packet: StatusPacket) -> None:
         state = BedJetState.from_status(packet, available=self._transport.is_connected)
-        for anomaly in packet.anomalies:
-            log.warning("anomaly: %s", anomaly)
+        if packet.anomalies != self._last_anomalies:
+            for anomaly in packet.anomalies:
+                log.warning("anomaly: %s", anomaly)
+            self._last_anomalies = packet.anomalies
         self._on_state(state, packet)

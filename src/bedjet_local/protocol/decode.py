@@ -21,6 +21,7 @@ from .constants import (
     MIN_STATUS_LENGTH,
     PACKET_FORMAT_DEBUG,
     PACKET_FORMAT_V3_HOME,
+    STATUS_MODE_PREDICTION,
     UNKNOWN_REGION,
     Offset,
     StatusMode,
@@ -158,10 +159,13 @@ def decode_status(data: bytes) -> StatusPacket:
         try:
             mode = StatusMode(mode_raw)
         except ValueError:
+            known = ", ".join(f"0x{m.value:02x} {m.name.lower()}" for m in StatusMode)
+            guess = STATUS_MODE_PREDICTION.get(mode_raw)
+            hint = f" Predicted to be {guess}, but that is untested." if guess else ""
             anomalies.append(
-                f"status mode 0x{mode_raw:02x} not yet verified. Only COOL (0x04) is known. "
-                f"Set this mode in the vendor app and capture it to identify the value "
-                f"(RL-012) — do NOT assume the command-mode table applies here."
+                f"status mode 0x{mode_raw:02x} not yet verified (known: {known}).{hint} "
+                f"Capture this mode from the vendor app to identify it — do NOT assume the "
+                f"command-mode table applies here, it has cool and turbo swapped (RL-013)."
             )
 
     # ── Fan ─────────────────────────────────────────────────────────────────────────────

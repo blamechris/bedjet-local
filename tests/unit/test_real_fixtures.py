@@ -230,3 +230,47 @@ def test_bytes_19_to_25_are_invariant_across_every_mode() -> None:
     configuration or identity. The firmware version is the leading candidate (RL-013)."""
     regions = {decode_status((FIXTURES / n).read_bytes()).unknown_region for n in ALL_FIXTURES}
     assert regions == {bytes([0x12, 0x01, 0x9A, 0x01, 0x10, 0xFF, 0x00])}
+
+
+# ── Heat (RL-014) ───────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def heat() -> bytes:
+    """Ground truth: Heat, fan 100%, target 89 F, timer running — vendor app, 2026-08-16."""
+    return (FIXTURES / "heat_fan100_target89f.bin").read_bytes()
+
+
+def test_heat_mode_is_one(heat: bytes) -> None:
+    """RL-014. Completes four of the status-mode values: 0=standby 1=heat 2=turbo 4=cool."""
+    packet = decode_status(heat)
+    assert packet.mode_raw == 0x01
+    assert packet.mode is StatusMode.HEAT
+    assert packet.anomalies == ()
+    assert BedJetState.from_status(packet).power is Power.ON
+
+
+def test_heat_was_actually_running(heat: bytes) -> None:
+    """The previous attempt captured a stopped unit. This one has a live timer, which is
+    what makes it a heat fixture rather than a standby one."""
+    packet = decode_status(heat)
+    assert packet.time_remaining_s == 29 * 60 + 40
+    assert packet.max_runtime_s == 12 * 3600
+    assert packet.target_temp_c == 31.5
+
+
+def test_heat_has_its_own_permitted_range(heat: bytes) -> None:
+    """Heat: 22.5-40.0 C (72.5-104.0 F) — different again from standby, cool and turbo."""
+    packet = decode_status(heat)
+    assert (packet.min_temp_c, packet.max_temp_c) == (22.5, 40.0)
+
+
+def test_predicted_modes_are_not_decoded() -> None:
+    """RL-014's prediction (0x03 extended heat, 0x05 dry) must stay a prediction.
+
+    Four verified values fit an ordering that implies the rest. Acting on that pattern is
+    precisely the move this project exists to avoid — a guess that decodes silently is
+    indistinguishable from a fact.
+    """
+    for predicted in (0x03, 0x05):
+        assert predicted not in {m.value for m in StatusMode}

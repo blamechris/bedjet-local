@@ -127,9 +127,24 @@ class StatusMode(IntEnum):
     """
 
     STANDBY = 0x00  # ✅ VERIFIED 2026-08-16 — off_standby.bin, off_after_heating.bin
+    HEAT = 0x01  # ✅ VERIFIED 2026-08-16 — heat_fan100_target89f.bin
     TURBO = 0x02  # ✅ VERIFIED 2026-08-16 — turbo_fan100_target109f.bin
     COOL = 0x04  # ✅ VERIFIED 2026-08-16 — cool_fan50_target75f.bin
-    # HEAT, DRY, EXT_HEAT: still unknown. Capture one state each from the vendor app.
+    # 0x03, 0x05, 0x06 unknown. See STATUS_MODE_PREDICTION for a falsifiable guess.
+
+
+#: ❓ **A prediction, not a finding.** Four verified values — standby 0, heat 1, turbo 2,
+#: cool 4 — leave a conspicuous gap at 3 and fit the ordering
+#: ``standby, heat, turbo, extended-heat, cool, dry, …``. That ordering predicts `0x03` is
+#: extended heat and `0x05` is dry.
+#:
+#: It is recorded here **only** so a `dry` capture can refute it. It is deliberately NOT in
+#: :class:`StatusMode`: a prediction that decodes silently is indistinguishable from a fact,
+#: and this project's whole discipline is that the two must never be confusable.
+STATUS_MODE_PREDICTION: Final = {
+    0x03: "extended heat (predicted, unverified)",
+    0x05: "dry (predicted, unverified)",
+}
 
 
 class CommandMode(IntEnum):

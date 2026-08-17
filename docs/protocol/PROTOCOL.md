@@ -162,6 +162,7 @@ notification mis-joined to its follow-up read would not sum to zero.
 | Mode | Max runtime | Permitted target range |
 |---|---|---|
 | standby `0x00` | 0:00 | 10.0–40.0 °C (50–104 °F) |
+| heat `0x01` | 12:00 | 22.5–40.0 °C (72.5–104.0 °F) |
 | cool `0x04` | 12:00 | 19.0–26.0 °C (66.2–78.8 °F) |
 | turbo `0x02` | **0:10** | fixed **43.0 °C (109.4 °F)** |
 
@@ -187,13 +188,21 @@ byte uses a different enum. It does.
 | Status value | Meaning | Command table calls it | Provenance |
 |---|---|---|---|
 | `0x00` | **Standby / off** | `0x01` is off | ✅ VERIFIED |
-| `0x02` | **Turbo** | *cool* | ✅ VERIFIED |
+| `0x01` | **Heat** | *cool* | ✅ VERIFIED |
+| `0x02` | **Turbo** | *heat* | ✅ VERIFIED |
 | `0x04` | **Cool** | *turbo* | ✅ VERIFIED |
-| `0x03`, `0x05`, `0x06`… | heat / dry / ext. heat — **unknown** | — | ❓ capture one state each |
+| `0x03` | extended heat — **predicted, unverified** | *heat* | ❓ |
+| `0x05` | dry — **predicted, unverified** | *dry* | ❓ |
 
-**The two enums have cool and turbo swapped.** That is worse than an unrelated mapping: a
-status packet decoded with the command table does not produce nonsense, it produces *the other
-real mode*. Cooling reads as turbo, turbo reads as cool, and nothing looks broken.
+**The two enums are offset from each other, and every overlap is wrong in a plausible way.**
+A status packet decoded with the command table does not produce nonsense — it produces *another
+real mode*. Cooling reads as turbo, turbo reads as heat, heating reads as cool. Nothing looks
+broken.
+
+The four verified values fit the ordering `standby, heat, turbo, extended-heat, cool, dry, …`,
+which is where the two predictions come from. They are **kept out of `StatusMode`** on purpose:
+a prediction that decodes silently is indistinguishable from a fact. The decoder names the
+prediction in its anomaly message so a `dry` capture can refute it.
 
 `StatusMode` therefore contains only `COOL`. Any other value decodes to `None` with an anomaly
 rather than to a guess, and `Power` stays `UNKNOWN` unless the mode is verified. A
