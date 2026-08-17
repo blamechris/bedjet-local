@@ -44,6 +44,24 @@ class BedJetState:
     fan_percent: int | None = None
     time_remaining_s: int | None = None
     sequence_step: int | None = None
+
+    min_target_c: float | None = None
+    """Lowest target the device will accept **in whatever mode it is in now** — not a
+    device constant. Standby reports 10-40 C, cool 19-26 C, turbo a fixed 43 C (RL-013).
+
+    Here rather than only on the packet because the alternative is worse: a climate entity
+    or a UI slider needs bounds, and if this field is absent the adapter reaches down into
+    ``protocol/`` for a byte offset. AGENTS.md answers that case explicitly — add the field
+    here. Turbo's 43 C is above the 104 F every public source calls the maximum, so a
+    hardcoded range would also be wrong."""
+
+    max_target_c: float | None = None
+    """Highest target the device will accept in the current mode. See :attr:`min_target_c`."""
+
+    max_runtime_s: int | None = None
+    """Longest session the device permits in the current mode: 0 in standby, 12 h cooling,
+    10 min in turbo. ✅ VERIFIED (RL-013)."""
+
     errors: tuple[str, ...] = field(default_factory=tuple)
     """Anomalies carried up from decoding. Surfaced, never swallowed — an unexplained
     packet is information about the device, and the point of this project is to learn."""
@@ -70,8 +88,21 @@ class BedJetState:
             fan_percent=packet.fan_percent,
             time_remaining_s=packet.time_remaining_s,
             sequence_step=packet.sequence_step,
+            min_target_c=packet.min_temp_c,
+            max_target_c=packet.max_temp_c,
+            max_runtime_s=packet.max_runtime_s,
             errors=packet.anomalies,
         )
+
+    @property
+    def fan_is_stale(self) -> bool:
+        """Whether :attr:`fan_percent` describes airflow or merely a remembered setting.
+
+        The fan byte keeps its last-set value while the unit is in standby (RL-013): an
+        idle unit reported 50% immediately after a 50% cooling session. A consumer that
+        renders that as live airflow is wrong, and cannot tell from the number alone.
+        """
+        return self.power is Power.OFF and self.fan_percent is not None
 
     def describe(self) -> str:
         """One-line human summary, for the CLI and for logs."""
