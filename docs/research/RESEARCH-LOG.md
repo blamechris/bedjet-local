@@ -1307,6 +1307,12 @@ key, so when the responsible app lacks one too, TCC does not prompt and does not
 **it kills the process.** The silent-abort-with-no-traceback is the diagnostic signature; look
 for `namespace: TCC` in the crash report rather than debugging the BLE code.
 
+> ⚠️ **Corrected by RL-028.** The sentence above is wrong about *why* Terminal.app works:
+> Terminal.app does **not** ship `NSBluetoothAlwaysUsageDescription`. It holds the Apple-private
+> entitlement `com.apple.private.tcc.allow-prompting` for `kTCCServiceAll` instead. The
+> conclusion — that a third-party bundle needs the key — is unaffected, but "use Terminal.app"
+> is narrower than the evidence requires. See RL-028.
+
 Consequences, in rough order of how much they will bite:
 
 - **Any unattended macOS launch is affected** — `launchd`, `cron`, CI, an agent harness, or a
@@ -1423,3 +1429,56 @@ issued, inherited by the child Python process, and survives a background launch)
 **Next question:** does `open -a BedJetDaemon.app` actually obtain the Bluetooth grant, does the
 spawned `uv`/Python child inherit it, and does it still hold when launchd starts the app at login
 rather than a human starting it at the keyboard? Attended run required; read-only is sufficient.
+
+---
+
+## RL-028 — Terminal.app is not special because of a plist key; it holds a private entitlement
+
+**Date:** 2026-08-17
+**Question:** RL-025 concluded that BLE work must be launched from Terminal.app, on the stated
+grounds that Terminal.app "ships the usage-description key and holds a TCC grant". The operator
+challenged the corollary — why would iTerm2 not work? — which is a question RL-025 never actually
+answered with evidence. **Which terminal emulators can host a CoreBluetooth process, and why?**
+**Setup:** Host-only, no device. `Info.plist` inspected with `PlistBuddy` and entitlements with
+`codesign -d --entitlements` on the two terminals installed here.
+**Observation:**
+
+```
+/Applications/iTerm.app                       NSBluetoothAlwaysUsageDescription:
+                                              "An application in iTerm2 wants to use Bluetooth."
+/System/Applications/Utilities/Terminal.app   NO NSBluetoothAlwaysUsageDescription
+
+Terminal.app entitlements:
+  "com.apple.private.tcc.allow-prompting" => [ 0 => "kTCCServiceAll" ]
+```
+
+**Interpretation:** **RL-025's stated mechanism is wrong, and exactly backwards between these two
+apps.** Terminal.app carries no Bluetooth usage description at all. What it carries is an
+Apple-private entitlement to prompt for *every* TCC service, which is why it can host a
+CoreBluetooth process without the key — the key is what a third-party app needs in order to be
+allowed to prompt, and Terminal.app is exempt from needing it. iTerm2, having no such
+entitlement, takes the ordinary route and ships the purpose string.
+
+The practical corollary RL-025 drew is therefore **narrower than the evidence supports**:
+iTerm2 has everything it needs to host BLE work, and should do so after a one-time consent
+prompt. "Use Terminal.app" was a correct instruction for the wrong reason, and the wrong reason
+is the kind that produces confident wrong advice later — which is what happened, in a session
+handoff, until the operator asked why.
+
+**What does not change:** the conclusion that drove `deploy/macos/`. An ad-hoc bundle of ours
+cannot obtain `com.apple.private.tcc.allow-prompting` — it is Apple-private and requires their
+signature — so our wrapper genuinely does need `NSBluetoothAlwaysUsageDescription`, exactly as
+built. RL-025's consequences for unattended launch, for `launchd`, and for the Pi's advantage
+all stand; only the explanation of the Terminal.app control case was wrong.
+
+A second-order note worth keeping: RL-025 observed *one* working launcher and *one* failing one
+and generalised the difference to the plist key without checking a third case. Two apps that both
+work, for two different reasons, is precisely the shape that generalisation cannot see.
+
+**Confidence:** high — the entitlement and the absent key are both directly readable, and they
+are static properties of the installed apps rather than an inference from behaviour.
+**Provenance:** ✅ VERIFIED (our host — a macOS fact, not a device fact)
+**Fixture:** —
+**Next question:** does iTerm2 in fact host `bedjet serve` successfully after granting its
+prompt? Cheap to settle alongside the wrapper verification in #9, and it would confirm the
+mechanism rather than only the absence of the key.
