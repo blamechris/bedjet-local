@@ -11,11 +11,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Adapters are extras, not core dependencies: the point of ADR-0002's layering is that a
+# host running the MQTT bridge does not have to carry an HTTP server, and neither is needed
+# to use the library or the CLI. `dev` installs both so CI always exercises them.
+http = ["aiohttp>=3.9"]
+mqtt = ["aiomqtt>=2.0"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "ruff>=0.6",
     "mypy>=1.11",
+    "aiohttp>=3.9",
+    "aiomqtt>=2.0",
 ]
 # Transport via an ESPHome Bluetooth Proxy (ADR-0001 Phase 3, option B).
 # Not installed by default; the transport abstraction is what makes it optional.
