@@ -57,8 +57,23 @@ class StatusPacket:
     fan_percent: int | None = None
 
     min_temp_c: float | None = None
+    """Lowest target the device permits **in the current mode** (byte 13), not a fixed
+    device limit. ✅ VERIFIED across three modes (RL-013)."""
+
     max_temp_c: float | None = None
-    turbo_time_s: int | None = None
+    """Highest target the device permits **in the current mode** (byte 14). Turbo reports
+    43.0 C — above the 104 F every public source calls the maximum."""
+
+    max_runtime_s: int | None = None
+    """Longest run the device permits in the current mode. Standby 0, cool 12 h, turbo
+    10 min. ✅ VERIFIED (RL-013)."""
+
+    turbo_elapsed_s: int | None = None
+    """Counts up once per second while in turbo, zero otherwise. ✅ VERIFIED (RL-013)."""
+
+    checksum_ok: bool | None = None
+    """Whether the packet sums to zero mod 256. ``None`` when the packet is too short to
+    tell. ✅ VERIFIED (RL-013) — undocumented by every upstream source."""
     shutdown_reason: int | None = None
     update_phase: int | None = None
     flags: int | None = None
@@ -96,7 +111,9 @@ class StatusPacket:
     def is_plausible(self) -> bool:
         """Whether this packet looks like a real V3 status packet.
 
-        Deliberately weak — it exists to catch "we subscribed to the wrong characteristic",
-        not to validate protocol correctness.
+        Now backed by a real integrity check rather than a smell test: a packet whose
+        checksum fails is not plausible regardless of how sensible its fields look.
         """
+        if self.checksum_ok is False:
+            return False
         return not self.anomalies and self.actual_temp_c is not None

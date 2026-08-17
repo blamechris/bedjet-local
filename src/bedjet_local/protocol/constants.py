@@ -72,13 +72,20 @@ class Offset(IntEnum):
     MODE = 9
     FAN_STEP = 10
 
-    # ❓ plausible but unconfirmed — consistent with one capture, needs a second state.
+    # ✅ VERIFIED across 3 modes (RL-013): these are the PERMITTED RANGE and MAX RUNTIME
+    # *for the current mode*, not fixed device limits. standby 0:00 / 10.0-40.0C,
+    # cool 12:00 / 19.0-26.0C, turbo 0:10 / 43.0C fixed.
     MAX_RUNTIME_HOURS = 11
     MAX_RUNTIME_MINUTES = 12
-    MIN_TEMP = 13  # 0x26 -> 19.0C -> 66.2F, matches the documented minimum
-    MAX_TEMP = 14  # 0x34 -> 26.0C -> 78.8F, NOT the documented 104F maximum
-    TURBO_TIME = 15  # uint16, bytes 15-16
-    AMBIENT_TEMP = 17
+    MIN_TEMP = 13
+    MAX_TEMP = 14
+
+    # ✅ VERIFIED (RL-013): uint16 that counts UP once per second in turbo and stays 0
+    # otherwise. Two consecutive turbo packets read 13 then 14 while the remaining time fell
+    # 9:47 -> 9:46 against a 10:00 turbo limit, i.e. seconds elapsed in turbo.
+    TURBO_ELAPSED = 15  # uint16, bytes 15-16
+
+    AMBIENT_TEMP = 17  # ✅ tracks room temperature across captures
     SHUTDOWN_REASON = 18
     UPDATE_PHASE = 26
     FLAGS = 27
@@ -89,12 +96,13 @@ class Offset(IntEnum):
 #: Length of the header preceding the payload. ✅ VERIFIED (RL-004).
 HEADER_LENGTH: Final = 4
 
-#: Bytes 19-25 have no known meaning. Retained verbatim by the decoder so a diff across
-#: device states can attack them without any writes.
+#: Bytes 19-25 are **invariant across all 5 captures spanning 3 modes** (`12 01 9a 01 10 ff
+#: 00`). They are therefore not state — they are configuration or identity, and the firmware
+#: version is the leading candidate given we have failed to find it anywhere else (RL-013).
 UNKNOWN_REGION: Final = range(19, 26)
 
-#: ✅ VERIFIED: our device sent a 31-byte status packet, one byte longer than the 30 upstream
-#: describes. Byte 30 (0x31 in the first capture) is unaccounted for.
+#: ✅ VERIFIED: our device sends 31-byte status packets. Upstream's documented layout ends at
+#: byte 29; byte 30 is the checksum (see below), which no upstream source mentions.
 OBSERVED_PACKET_LENGTH: Final = 31
 
 MIN_STATUS_LENGTH: Final = 11
@@ -108,18 +116,20 @@ PACKET_TYPE_DEBUG: Final = 0x02
 class StatusMode(IntEnum):
     """Mode as reported in a **status packet**.
 
-    ⚠️ This is **not** the same enum as :class:`CommandMode`. Our first capture had the
-    device in **Cool** (set via the vendor app) and byte 9 read ``0x04`` — which the command
-    table calls *turbo*. Decoding status with the command enum reports the wrong mode, and
-    did: our first run displayed "turbo" for a unit that was cooling (RL-012).
+    ⚠️ **Not** the same enum as :class:`CommandMode`, and the two do not even agree on the
+    values they share. Byte 9 read ``0x04`` with the unit cooling; the command table calls
+    ``0x04`` *turbo*. Byte 9 read ``0x02`` with the unit in turbo; the command table calls
+    ``0x02`` *cool*. **The two enums have cool and turbo swapped** (RL-013) — which is worse
+    than an unrelated mapping, because it is exactly the sort of coincidence that makes a
+    wrong decode look right.
 
-    Only ``COOL`` is verified. Every other value decodes to ``None`` with an anomaly rather
-    than to a guess, because a plausible-looking wrong mode is worse than an admitted
-    unknown — especially for a device that makes heat. Capture each mode from the app to
-    fill this in.
+    Values not listed here decode to ``None`` with an anomaly rather than to a guess.
     """
 
-    COOL = 0x04  # ✅ VERIFIED 2026-08-16 — fixture cool_fan50_target75f.bin
+    STANDBY = 0x00  # ✅ VERIFIED 2026-08-16 — off_standby.bin, off_after_heating.bin
+    TURBO = 0x02  # ✅ VERIFIED 2026-08-16 — turbo_fan100_target109f.bin
+    COOL = 0x04  # ✅ VERIFIED 2026-08-16 — cool_fan50_target75f.bin
+    # HEAT, DRY, EXT_HEAT: still unknown. Capture one state each from the vendor app.
 
 
 class CommandMode(IntEnum):
@@ -142,8 +152,14 @@ class CommandMode(IntEnum):
 #: = 75.2F. Wire format is 2 x degrees Celsius.
 TEMP_SCALE: Final = 2.0
 
-MIN_TARGET_C: Final = 19.0
-MAX_TARGET_C: Final = 40.0
+#: ⚠️ The device reports its **own** permitted target range per mode, in bytes 13-14, and
+#: those bounds move with the mode (RL-013): standby 10.0-40.0 C, cool 19.0-26.0 C, turbo a
+#: fixed 43.0 C. Turbo's 43.0 C (109.4 F) is ABOVE the 104 F that upstream and marketing
+#: call the maximum — so a hardcoded range produces false anomalies on a perfectly healthy
+#: packet, which it did. Validate against the device's own bounds; these constants are only
+#: an absolute sanity envelope for catching a decode that has gone truly wrong.
+ABSOLUTE_MIN_C: Final = 5.0
+ABSOLUTE_MAX_C: Final = 50.0
 
 FAN_STEP_MIN: Final = 0
 FAN_STEP_MAX: Final = 19
@@ -168,3 +184,21 @@ def temp_byte_to_c(raw: int) -> float:
 def c_to_f(celsius: float) -> float:
     """Exact conversion, for display only."""
     return celsius * 9.0 / 5.0 + 32.0
+
+
+# ── Checksum ────────────────────────────────────────────────────────────────────────────
+#: ✅ VERIFIED (RL-013). The final byte is a checksum: the whole packet sums to zero mod 256.
+#: **No upstream source documents this** — ESPHome, the HA integrations and bedjet-re all
+#: stop at byte 29 and none mentions a checksum. Confirmed against 5 packets spanning 3
+#: modes. It gives us real packet integrity, and independently proves our reassembly is
+#: correct: a mis-joined packet would not sum to zero.
+
+
+def compute_checksum(body: bytes) -> int:
+    """Checksum byte for ``body`` (the packet up to but excluding the checksum itself)."""
+    return (-sum(body)) & 0xFF
+
+
+def verify_checksum(packet: bytes) -> bool:
+    """Whether a whole packet, checksum byte included, sums to zero mod 256."""
+    return bool(packet) and sum(packet) % 256 == 0

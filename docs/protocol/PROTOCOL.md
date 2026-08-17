@@ -96,9 +96,11 @@ entirely open. Candidate explanations, none tested:
 2. A user-settable name that has never been set, so we are seeing uninitialised memory.
 3. Upstream's "device name" label is simply wrong for this firmware revision.
 
-**Firmware version is still not found.** It is not in the advertisement and not in `2001`. It
-may live behind one of the three undocumented characteristics, or in the status packet's
-`update_phase`/flags region.
+**Firmware version is still not found.** Not in the advertisement, not in `2001`, and not
+identified in the status packet. The best remaining candidate is bytes 19–25, which are
+**invariant across every capture and every mode** (`12 01 9a 01 10 ff 00`) — that is what
+configuration or identity looks like, not state. Untestable without a second device or a
+firmware update.
 
 ## Status packet
 
@@ -134,18 +136,44 @@ it — which is exactly why `StatusPacket.header` retains the raw bytes.
 | 8 | **Target temperature** | `2 × °C` | `0x30` → 24.0 °C = **75.2 °F** | ✅ VERIFIED — app was set to 75 °F |
 | 9 | **Mode** (status enum) | see below | `0x04` = **Cool** | ✅ VERIFIED — app was set to Cool |
 | 10 | **Fan** | step index | `0x09` → **50 %** | ✅ VERIFIED — app was set to 50 % |
-| 11–12 | Max runtime h/m | uint8 ×2 | `0x0c 0x00` = 12:00 | ❓ plausible |
-| 13 | Min temperature bound | `2 × °C` | `0x26` → 19.0 °C = **66.2 °F** | ❓ matches the documented minimum |
-| 14 | Max temperature bound | `2 × °C` | `0x34` → 26.0 °C = 78.8 °F | ❓ **not** the documented 104 °F max — Cool-mode limit? |
-| 15–16 | Turbo time | uint16 | `0x00 0x00` | ❓ |
-| 17 | Ambient temperature | `2 × °C` | `0x29` → 20.5 °C | ❓ plausible |
-| 18 | Shutdown reason | uint8 | `0x00` | ❓ |
-| 19–25 | **unknown** | — | `12 01 9a 01 10 ff 00` | ❓ opaque |
-| 26 | Update phase | uint8 | `0x15` | ❓ |
-| 27 | Flags bitfield | bitfield | `0x34` | ❓ bit positions unknown |
+| 11–12 | **Max runtime for this mode** h/m | uint8 ×2 | 0:00 / 12:00 / 0:10 | ✅ VERIFIED across 3 modes |
+| 13–14 | **Permitted target range for this mode** | `2 × °C` | see below | ✅ VERIFIED across 3 modes |
+| 15–16 | **Seconds elapsed in turbo** | uint16 **big-endian** | 13 → 14 as remaining fell | ✅ VERIFIED |
+| 17 | Ambient temperature | `2 × °C` | 20.5–22.0 °C, tracks the room | ✅ plausible across captures |
+| 18 | Shutdown reason | uint8 | `0x00` in all captures | ❓ |
+| 19–25 | **invariant across all modes** | — | `12 01 9a 01 10 ff 00` | ❓ not state — config or identity |
+| 26 | Update phase | uint8 | `0x15` in all captures | ❓ |
+| 27 | Flags bitfield | bitfield | `0x34` in all captures | ❓ bit positions unknown |
 | 28 | Sequence step | uint8 | `0x00` | ❓ |
 | 29 | Notify code | uint8 | `0x00` | ❓ |
-| **30** | **beyond upstream's layout** | — | `0x31` | ❓ unaccounted for by any public source |
+| **30** | **CHECKSUM** | packet sums to 0 mod 256 | ✅ holds for 5/5 packets | ✅ **VERIFIED — undocumented upstream** |
+
+### ✅ Byte 30 is a checksum — documented by no upstream source
+
+`byte30 = (-sum(bytes 0..29)) & 0xFF`, i.e. the whole packet sums to **zero mod 256**. Verified
+across five packets and three modes. ESPHome, every Home Assistant integration, and `bedjet-re`
+all end their layout at byte 29 and none mentions a checksum.
+
+Beyond integrity checking, this **independently proves reassembly is correct**: a
+notification mis-joined to its follow-up read would not sum to zero.
+
+### ✅ Per-mode limits — bytes 11–14 are not device limits
+
+| Mode | Max runtime | Permitted target range |
+|---|---|---|
+| standby `0x00` | 0:00 | 10.0–40.0 °C (50–104 °F) |
+| cool `0x04` | 12:00 | 19.0–26.0 °C (66.2–78.8 °F) |
+| turbo `0x02` | **0:10** | fixed **43.0 °C (109.4 °F)** |
+
+⚠️ **Turbo targets 109.4 °F — above the 104 °F that upstream and the manufacturer's marketing
+both call the maximum.** A hardcoded ceiling therefore flags a perfectly healthy turbo packet
+as anomalous, which ours did. **The device publishes its own limits; ask it rather than assume.**
+Any clamp applied in Milestone 2 must come from bytes 13–14.
+
+Bytes 15–16 are **big-endian**, unusual for BLE: two turbo packets read 13 then 14 while
+remaining fell 9:47 → 9:46 against a 10:00 limit, and `elapsed + remaining == max runtime`
+exactly. Little-endian would give 3328 and 3584. Big-endian-u16 versus a plain u8 at byte 16
+cannot be separated until a capture more than 255 s into turbo.
 
 ### ⚠️ Status modes are NOT command modes
 
@@ -156,10 +184,16 @@ command enum produced `mode=turbo` for a unit that was cooling, silently and pla
 Upstream command tables describe what you **send**. Nothing we found states that the status
 byte uses a different enum. It does.
 
-| Status value | Meaning | Provenance |
-|---|---|---|
-| `0x04` | **Cool** | ✅ VERIFIED 2026-08-16 |
-| everything else | **unknown** | ❓ capture one state per mode to fill in |
+| Status value | Meaning | Command table calls it | Provenance |
+|---|---|---|---|
+| `0x00` | **Standby / off** | `0x01` is off | ✅ VERIFIED |
+| `0x02` | **Turbo** | *cool* | ✅ VERIFIED |
+| `0x04` | **Cool** | *turbo* | ✅ VERIFIED |
+| `0x03`, `0x05`, `0x06`… | heat / dry / ext. heat — **unknown** | — | ❓ capture one state each |
+
+**The two enums have cool and turbo swapped.** That is worse than an unrelated mapping: a
+status packet decoded with the command table does not produce nonsense, it produces *the other
+real mode*. Cooling reads as turbo, turbo reads as cool, and nothing looks broken.
 
 `StatusMode` therefore contains only `COOL`. Any other value decodes to `None` with an anomaly
 rather than to a guess, and `Power` stays `UNKNOWN` unless the mode is verified. A

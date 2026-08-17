@@ -50,10 +50,15 @@ class BedJetState:
 
     @classmethod
     def from_status(cls, packet: StatusPacket, *, available: bool = True) -> BedJetState:
-        # Only COOL is a verified status mode, and it implies the unit is running. The
-        # standby/off value is not yet known (RL-012), so anything else stays UNKNOWN
-        # rather than being guessed at. Capturing the app's "off" state fills this in.
-        power = Power.ON if packet.mode is StatusMode.COOL else Power.UNKNOWN
+        # ✅ STANDBY (0x00) is now verified (RL-013), so "off" is a real answer rather than
+        # an absence of one. Verified running modes imply ON; anything still unrecognised
+        # stays UNKNOWN rather than being guessed at.
+        if packet.mode is StatusMode.STANDBY:
+            power = Power.OFF
+        elif packet.mode in (StatusMode.COOL, StatusMode.TURBO):
+            power = Power.ON
+        else:
+            power = Power.UNKNOWN
 
         return cls(
             available=available,
@@ -83,7 +88,11 @@ class BedJetState:
         if self.ambient_temp_c is not None:
             parts.append(f"ambient={self.ambient_temp_c:.1f}C")
         if self.fan_percent is not None:
-            parts.append(f"fan={self.fan_percent}%")
+            # The fan byte holds the last-set value even in standby (RL-013): an idle unit
+            # reported 50% right after a 50% cool session. Reporting that as live airflow
+            # would be wrong, so say so.
+            stale = " (last set)" if self.power is Power.OFF else ""
+            parts.append(f"fan={self.fan_percent}%{stale}")
         if self.time_remaining_s:
             h, rem = divmod(self.time_remaining_s, 3600)
             m, s = divmod(rem, 60)

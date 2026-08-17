@@ -12,11 +12,14 @@ import pytest
 
 from bedjet_local.protocol.constants import (
     HEADER_LENGTH,
+    OBSERVED_PACKET_LENGTH,
     Offset,
     StatusMode,
     c_to_f,
+    compute_checksum,
     fan_step_to_percent,
     temp_byte_to_c,
+    verify_checksum,
 )
 from bedjet_local.protocol.decode import decode_status, reassemble
 
@@ -30,14 +33,22 @@ def build_status(
     target: int = 50,  # 25.0 C
     mode: int = StatusMode.COOL,
     fan_step: int = 9,
+    min_temp: int = 38,  # 19.0 C — the range the device reports for cool
+    max_temp: int = 52,  # 26.0 C
     partial: int = 0,
-    length: int = 30 - HEADER_LENGTH,
+    length: int = OBSERVED_PACKET_LENGTH - HEADER_LENGTH,
     packet_format: int = 0x56,
     packet_type: int = 0x01,
+    checksum: bool = True,
     trailing: bytes = b"",
 ) -> bytes:
-    """Synthesise a status packet using the VERIFIED header layout (RL-004)."""
-    data = bytearray(30)
+    """Synthesise a status packet with the VERIFIED layout, bounds, and checksum.
+
+    Shaped like a real packet on purpose: the decoder validates the target against the
+    device-reported bounds and checks the trailing checksum, so a synthetic packet that
+    omits either is not a useful stand-in for one off the wire.
+    """
+    data = bytearray(OBSERVED_PACKET_LENGTH)
     data[Offset.PAYLOAD_LENGTH] = length
     data[Offset.IS_PARTIAL] = partial
     data[Offset.PACKET_FORMAT] = packet_format
@@ -49,7 +60,13 @@ def build_status(
     data[Offset.TARGET_TEMP] = target
     data[Offset.MODE] = mode
     data[Offset.FAN_STEP] = fan_step
+    data[Offset.MIN_TEMP] = min_temp
+    data[Offset.MAX_TEMP] = max_temp
     data[Offset.AMBIENT_TEMP] = 42
+    if checksum:
+        data[OBSERVED_PACKET_LENGTH - 1] = compute_checksum(
+            bytes(data[: OBSERVED_PACKET_LENGTH - 1])
+        )
     return bytes(data) + trailing
 
 
@@ -82,7 +99,47 @@ def test_upstream_fahrenheit_formula_agrees_with_ours(raw: int) -> None:
 def test_out_of_range_temperature_is_reported_not_clamped() -> None:
     packet = decode_status(build_status(actual=200))  # 100 C
     assert packet.actual_temp_c == 100.0, "an observation must never be silently clamped"
-    assert any("outside documented range" in a for a in packet.anomalies)
+    assert any("sanity envelope" in a for a in packet.anomalies)
+
+
+def test_target_is_validated_against_device_reported_bounds_not_a_constant() -> None:
+    """RL-013: turbo legitimately targets 43.0 C, above the 104 F everyone calls the max.
+
+    A hardcoded ceiling flagged a healthy turbo packet as anomalous. The device reports its
+    own per-mode range, so that is what the target is checked against.
+    """
+    turbo_like = build_status(mode=StatusMode.TURBO, target=86, min_temp=86, max_temp=86)
+    packet = decode_status(turbo_like)
+    assert packet.target_temp_c == 43.0
+    assert packet.anomalies == (), f"healthy turbo packet flagged: {packet.anomalies}"
+
+
+def test_target_outside_the_device_reported_range_is_flagged() -> None:
+    packet = decode_status(build_status(target=80, min_temp=38, max_temp=52))
+    assert any("outside the range the device reports" in a for a in packet.anomalies)
+
+
+# ── Checksum ────────────────────────────────────────────────────────────────────────────
+
+
+def test_checksum_round_trips() -> None:
+    packet = decode_status(build_status())
+    assert packet.checksum_ok is True
+    assert verify_checksum(build_status())
+
+
+def test_corrupt_packet_fails_the_checksum_and_is_not_plausible() -> None:
+    data = bytearray(build_status())
+    data[Offset.TARGET_TEMP] ^= 0xFF  # flip a field without fixing the checksum
+    packet = decode_status(bytes(data))
+    assert packet.checksum_ok is False
+    assert not packet.is_plausible
+    assert any("checksum mismatch" in a for a in packet.anomalies)
+
+
+def test_checksum_is_unknown_for_a_truncated_packet() -> None:
+    packet = decode_status(build_status()[:20])
+    assert packet.checksum_ok is None, "cannot judge a checksum we have not received"
 
 
 # ── Happy path ──────────────────────────────────────────────────────────────────────────

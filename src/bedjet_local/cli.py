@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import logging
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -31,6 +32,14 @@ def _setup_logging(debug: bool) -> None:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+
+@dataclass
+class _Dedup:
+    """Tracks consecutive identical packets so `watch` prints transitions, not repeats."""
+
+    last: bytes | None = None
+    repeats: int = 0
 
 
 def _short(address: str, known: dict[str, registry.KnownDevice]) -> str:
@@ -211,8 +220,26 @@ async def cmd_watch(args: argparse.Namespace) -> int:
     await transport.connect(args.address, timeout=args.timeout)
 
     captures: list[bytes] = []
+    # The device re-sends the same status several times a second. Printing every one buries
+    # the interesting moment — the transition — in identical lines, and makes the operator
+    # hold Ctrl-C to escape. Only changes are printed; repeats collapse into a counter.
+    seen = _Dedup()
+    done = asyncio.Event()
+
+    def flush_repeats() -> None:
+        if seen.repeats:
+            print(f"           … {seen.repeats} identical packet(s)")
+            seen.repeats = 0
 
     def on_state(state: BedJetState, packet: StatusPacket) -> None:
+        captures.append(packet.raw)
+
+        if packet.raw == seen.last:
+            seen.repeats += 1
+            return
+        flush_repeats()
+        seen.last = packet.raw
+
         stamp = datetime.now(UTC).strftime("%H:%M:%S")
         print(f"[{stamp}] {state.describe()}")
         if args.raw:
@@ -221,7 +248,9 @@ async def cmd_watch(args: argparse.Namespace) -> int:
             print(f"          unknown[19:26]: {packet.unknown_region.hex(' ')}")
         for anomaly in packet.anomalies:
             print(f"          ⚠️  {anomaly}")
-        captures.append(packet.raw)
+
+        if args.packets and len({bytes(c) for c in captures}) >= args.packets:
+            done.set()
 
     reader = StatusReader(transport, on_state)
     await reader.start()
@@ -249,7 +278,11 @@ async def cmd_watch(args: argparse.Namespace) -> int:
         await transport.disconnect()
         print("\nLink released — the vendor app can connect again.")
 
-    print(f"\n{reader.packets_seen} packets seen ({reader.partials_seen} flagged partial).")
+    distinct = len({bytes(c) for c in captures})
+    print(
+        f"\n{reader.packets_seen} packets seen, {distinct} distinct "
+        f"({reader.partials_seen} needed a follow-up read)."
+    )
     if args.save and captures:
         args.save.write_bytes(captures[-1])
         print(f"Saved last packet to {args.save}")
@@ -306,6 +339,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="S",
         help="release the BLE link after S seconds (default 120). Use 0 to hold it "
         "indefinitely — but the vendor app cannot connect while we do.",
+    )
+    p_watch.add_argument(
+        "--packets",
+        type=int,
+        default=0,
+        metavar="N",
+        help="stop after N distinct packets (repeats do not count). 0 = no limit.",
     )
     p_watch.add_argument("--save", type=Path, help="write last packet to file")
     p_watch.set_defaults(func=cmd_watch)

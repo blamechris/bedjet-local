@@ -13,12 +13,12 @@ decoder's job is to *observe accurately*, including observing that something is 
 from __future__ import annotations
 
 from .constants import (
+    ABSOLUTE_MAX_C,
+    ABSOLUTE_MIN_C,
     FAN_STEP_MAX,
     FAN_STEP_MIN,
     HEADER_LENGTH,
-    MAX_TARGET_C,
     MIN_STATUS_LENGTH,
-    MIN_TARGET_C,
     PACKET_FORMAT_DEBUG,
     PACKET_FORMAT_V3_HOME,
     UNKNOWN_REGION,
@@ -26,6 +26,7 @@ from .constants import (
     StatusMode,
     fan_step_to_percent,
     temp_byte_to_c,
+    verify_checksum,
 )
 from .packets import StatusPacket
 
@@ -34,10 +35,21 @@ def _u8(data: bytes, offset: int) -> int | None:
     return data[offset] if offset < len(data) else None
 
 
-def _u16_le(data: bytes, offset: int) -> int | None:
+def _u16_be(data: bytes, offset: int) -> int | None:
+    """Big-endian uint16.
+
+    ⚠️ Unusual for BLE, which is little-endian by convention — but the data says so. Two
+    consecutive turbo packets read ``00 0d`` then ``00 0e`` while remaining time fell
+    9:47 -> 9:46 against a 10:00 limit, i.e. 13 then 14 seconds elapsed. Little-endian would
+    make those 3328 and 3584, which fit nothing.
+
+    What the data cannot yet separate is big-endian-u16 from a plain u8 at offset 16 with a
+    zero byte beside it. A capture more than 255 s into turbo settles it; the turbo limit is
+    600 s, so it is reachable (RL-013).
+    """
     if offset + 1 >= len(data):
         return None
-    return int.from_bytes(data[offset : offset + 2], "little")
+    return int.from_bytes(data[offset : offset + 2], "big")
 
 
 def decode_status(data: bytes) -> StatusPacket:
@@ -100,11 +112,39 @@ def decode_status(data: bytes) -> StatusPacket:
             anomalies.append(f"implausible time remaining {hours:02d}:{minutes:02d}:{seconds:02d}")
 
     # ── Temperatures ────────────────────────────────────────────────────────────────────
-    actual_temp_c = _decode_temp(data, Offset.ACTUAL_TEMP, "actual", anomalies)
-    target_temp_c = _decode_temp(data, Offset.TARGET_TEMP, "target", anomalies)
-    ambient_temp_c = _decode_temp(data, Offset.AMBIENT_TEMP, "ambient", anomalies, strict=False)
-    min_temp_c = _decode_temp(data, Offset.MIN_TEMP, "min bound", anomalies, strict=False)
-    max_temp_c = _decode_temp(data, Offset.MAX_TEMP, "max bound", anomalies, strict=False)
+    # Bytes 13-14 are the range the device itself permits *in the current mode* (RL-013),
+    # not fixed device limits: standby 10.0-40.0C, cool 19.0-26.0C, turbo a flat 43.0C.
+    # Validating against a hardcoded range flagged a perfectly healthy turbo packet as an
+    # anomaly, because turbo's 43.0C (109.4F) exceeds the 104F everyone calls the maximum.
+    # The device knows its own limits; we should ask it rather than assume.
+    min_temp_c = _decode_temp(data, Offset.MIN_TEMP)
+    max_temp_c = _decode_temp(data, Offset.MAX_TEMP)
+    actual_temp_c = _decode_temp(data, Offset.ACTUAL_TEMP)
+    target_temp_c = _decode_temp(data, Offset.TARGET_TEMP)
+    ambient_temp_c = _decode_temp(data, Offset.AMBIENT_TEMP)
+
+    for label, value in (
+        ("actual", actual_temp_c),
+        ("target", target_temp_c),
+        ("ambient", ambient_temp_c),
+    ):
+        if value is not None and not (ABSOLUTE_MIN_C <= value <= ABSOLUTE_MAX_C):
+            anomalies.append(
+                f"{label} temperature {value:.1f}C is outside the sanity envelope "
+                f"{ABSOLUTE_MIN_C}-{ABSOLUTE_MAX_C}C — this looks like a decode error, "
+                f"not a device setting"
+            )
+
+    if (
+        target_temp_c is not None
+        and min_temp_c is not None
+        and max_temp_c is not None
+        and not (min_temp_c <= target_temp_c <= max_temp_c)
+    ):
+        anomalies.append(
+            f"target {target_temp_c:.1f}C is outside the range the device reports for this "
+            f"mode ({min_temp_c:.1f}-{max_temp_c:.1f}C)"
+        )
 
     # ── Mode ────────────────────────────────────────────────────────────────────────────
     # ✅ Byte 9 IS the mode (RL-003 resolved). But the status enum is NOT the command enum:
@@ -136,6 +176,20 @@ def decode_status(data: bytes) -> StatusPacket:
                 f"{FAN_STEP_MIN}-{FAN_STEP_MAX} (scaling is contested — see RL-002)"
             )
 
+    # ── Checksum ────────────────────────────────────────────────────────────────────────
+    # ✅ VERIFIED (RL-013): the whole packet sums to zero mod 256. Undocumented upstream.
+    # This is genuine integrity checking AND an independent proof that reassembly worked —
+    # a mis-joined packet would not sum to zero.
+    checksum_ok: bool | None = None
+    if declared_length is not None and len(data) >= declared_length + HEADER_LENGTH:
+        whole = data[: declared_length + HEADER_LENGTH]
+        checksum_ok = verify_checksum(whole)
+        if not checksum_ok:
+            anomalies.append(
+                f"checksum mismatch: packet sums to 0x{sum(whole) % 256:02x}, expected 0x00. "
+                f"The packet is corrupt or mis-reassembled — do not trust its fields."
+            )
+
     unknown_region = bytes(data[UNKNOWN_REGION.start : min(UNKNOWN_REGION.stop, len(data))])
 
     return StatusPacket(
@@ -155,7 +209,9 @@ def decode_status(data: bytes) -> StatusPacket:
         fan_percent=fan_percent,
         min_temp_c=min_temp_c,
         max_temp_c=max_temp_c,
-        turbo_time_s=_u16_le(data, Offset.TURBO_TIME),
+        turbo_elapsed_s=_u16_be(data, Offset.TURBO_ELAPSED),
+        max_runtime_s=_max_runtime(data),
+        checksum_ok=checksum_ok,
         shutdown_reason=_u8(data, Offset.SHUTDOWN_REASON),
         update_phase=_u8(data, Offset.UPDATE_PHASE),
         flags=_u8(data, Offset.FLAGS),
@@ -166,30 +222,27 @@ def decode_status(data: bytes) -> StatusPacket:
     )
 
 
-def _decode_temp(
-    data: bytes,
-    offset: int,
-    label: str,
-    anomalies: list[str],
-    *,
-    strict: bool = True,
-) -> float | None:
+def _decode_temp(data: bytes, offset: int) -> float | None:
     """Decode one temperature byte.
 
-    Out-of-range values are reported, never clamped: clamping an *input* is a safety
-    measure and belongs in the device layer; clamping an *observation* is lying about what
-    the device said.
+    Values are never clamped. Clamping an *input* is a safety measure and belongs in the
+    device layer; clamping an *observation* is lying about what the device said.
     """
     raw = _u8(data, offset)
-    if raw is None:
+    return None if raw is None else temp_byte_to_c(raw)
+
+
+def _max_runtime(data: bytes) -> int | None:
+    """Maximum runtime permitted in the current mode, in seconds.
+
+    ✅ VERIFIED (RL-013): standby 0:00, cool 12:00, turbo 0:10 — and the turbo packet's
+    remaining time (9:47) plus its elapsed counter (13 s) reconstitute exactly that 10:00.
+    """
+    hours = _u8(data, Offset.MAX_RUNTIME_HOURS)
+    minutes = _u8(data, Offset.MAX_RUNTIME_MINUTES)
+    if hours is None or minutes is None:
         return None
-    celsius = temp_byte_to_c(raw)
-    if strict and not (MIN_TARGET_C <= celsius <= MAX_TARGET_C):
-        anomalies.append(
-            f"{label} temperature {celsius:.1f}C (byte 0x{raw:02x} at offset {offset}) "
-            f"outside documented range {MIN_TARGET_C}-{MAX_TARGET_C}C"
-        )
-    return celsius
+    return hours * 3600 + minutes * 60
 
 
 def reassemble(first: bytes, remainder: bytes) -> bytes:

@@ -108,3 +108,125 @@ def test_device_state_from_real_packet(cool_fan50_target75f: bytes) -> None:
     assert state.fan_percent == 50
     assert state.target_temp_c == 24.0
     assert state.errors == ()
+
+
+# ── Cross-mode fixtures (RL-013) ────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def off_standby() -> bytes:
+    """Ground truth: unit off/idle, set via the vendor app 2026-08-16."""
+    return (FIXTURES / "off_standby.bin").read_bytes()
+
+
+@pytest.fixture
+def off_after_heating() -> bytes:
+    """Off, captured shortly after a heat session — outlet still at 32.0 C."""
+    return (FIXTURES / "off_after_heating.bin").read_bytes()
+
+
+@pytest.fixture
+def turbo() -> bytes:
+    """Ground truth: Turbo, set via the vendor app 2026-08-16."""
+    return (FIXTURES / "turbo_fan100_target109f.bin").read_bytes()
+
+
+ALL_FIXTURES = [
+    "cool_fan50_target75f.bin",
+    "off_standby.bin",
+    "off_after_heating.bin",
+    "turbo_fan100_target109f.bin",
+]
+
+
+@pytest.mark.parametrize("name", ALL_FIXTURES)
+def test_every_real_packet_passes_its_checksum(name: str) -> None:
+    """RL-013. The final byte makes the packet sum to zero mod 256 — undocumented upstream.
+
+    Holding across four packets and three modes is what turns this from a coincidence into
+    a protocol fact. It also proves reassembly is correct: a mis-joined packet would fail.
+    """
+    packet = decode_status((FIXTURES / name).read_bytes())
+    assert packet.checksum_ok is True, f"{name} failed its checksum"
+
+
+@pytest.mark.parametrize("name", ALL_FIXTURES)
+def test_every_real_packet_decodes_clean(name: str) -> None:
+    packet = decode_status((FIXTURES / name).read_bytes())
+    assert packet.anomalies == (), f"{name}: {packet.anomalies}"
+
+
+def test_standby_mode_is_zero(off_standby: bytes) -> None:
+    """RL-013: 0x00 is standby. This is what lets Power stop answering UNKNOWN."""
+    packet = decode_status(off_standby)
+    assert packet.mode is StatusMode.STANDBY
+    assert packet.time_remaining_s == 0
+    assert packet.max_runtime_s == 0
+
+    state = BedJetState.from_status(packet, available=True)
+    assert state.power is Power.OFF
+
+
+def test_turbo_mode_is_two_not_four(turbo: bytes) -> None:
+    """The command table calls 0x02 *cool* and 0x04 *turbo*. Status has them the other way
+    round — the coincidence that makes a wrong decode look plausible."""
+    packet = decode_status(turbo)
+    assert packet.mode_raw == 0x02
+    assert packet.mode is StatusMode.TURBO
+    assert BedJetState.from_status(packet).power is Power.ON
+
+
+def test_turbo_target_exceeds_the_supposed_device_maximum(turbo: bytes) -> None:
+    """43.0 C is 109.4 F — above the 104 F every public source calls the maximum, and it
+    decodes without an anomaly because the device reports that bound itself."""
+    packet = decode_status(turbo)
+    assert packet.target_temp_c == 43.0
+    assert packet.min_temp_c == 43.0
+    assert packet.max_temp_c == 43.0
+    assert packet.anomalies == ()
+
+
+def test_permitted_range_moves_with_the_mode(
+    off_standby: bytes, cool_fan50_target75f: bytes, turbo: bytes
+) -> None:
+    """Bytes 13-14 are a per-mode permitted range, not fixed device limits."""
+    assert (decode_status(off_standby).min_temp_c, decode_status(off_standby).max_temp_c) == (
+        10.0,
+        40.0,
+    )
+    cool = decode_status(cool_fan50_target75f)
+    assert (cool.min_temp_c, cool.max_temp_c) == (19.0, 26.0)
+    hot = decode_status(turbo)
+    assert (hot.min_temp_c, hot.max_temp_c) == (43.0, 43.0)
+
+
+def test_max_runtime_moves_with_the_mode(
+    off_standby: bytes, cool_fan50_target75f: bytes, turbo: bytes
+) -> None:
+    assert decode_status(off_standby).max_runtime_s == 0
+    assert decode_status(cool_fan50_target75f).max_runtime_s == 12 * 3600
+    assert decode_status(turbo).max_runtime_s == 10 * 60
+
+
+def test_turbo_elapsed_reconstructs_the_runtime(turbo: bytes) -> None:
+    """elapsed + remaining == the turbo limit, which is what identifies bytes 15-16."""
+    packet = decode_status(turbo)
+    assert packet.turbo_elapsed_s == 13
+    assert packet.time_remaining_s == 9 * 60 + 47
+    assert packet.turbo_elapsed_s + packet.time_remaining_s == packet.max_runtime_s == 600
+
+
+def test_fan_reads_stale_when_the_unit_is_off(off_standby: bytes) -> None:
+    """The fan byte holds the last-set value in standby, so state must not present it as
+    live airflow."""
+    state = BedJetState.from_status(decode_status(off_standby))
+    assert state.power is Power.OFF
+    assert state.fan_percent == 50
+    assert "last set" in state.describe()
+
+
+def test_bytes_19_to_25_are_invariant_across_every_mode() -> None:
+    """Constant across all captures and all modes, so this region is not state — it is
+    configuration or identity. The firmware version is the leading candidate (RL-013)."""
+    regions = {decode_status((FIXTURES / n).read_bytes()).unknown_region for n in ALL_FIXTURES}
+    assert regions == {bytes([0x12, 0x01, 0x9A, 0x01, 0x10, 0xFF, 0x00])}

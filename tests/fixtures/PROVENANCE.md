@@ -75,3 +75,51 @@ Strip nothing from a status packet — it carries no personal data. Do **not** c
 device address in a fixture filename or row; addresses are host-specific and pointlessly
 identifying. Raw btsnoop/pcap captures stay out of git entirely (see `.gitignore`) — promote
 individual packets deliberately.
+
+---
+
+### `off_standby.bin`
+
+| | |
+|---|---|
+| **Captured** | 2026-08-16 |
+| **Device state** | **Off / idle**, set in the vendor app, app force-closed |
+| **Bytes** | `01 56 1b 01 00 00 00 30 30 00 09 00 00 14 50 00 00 2c 00 12 01 9a 01 10 ff 00 15 34 00 00 8e` |
+| **Expected** | mode `0x00` standby · remaining 0:00:00 · max runtime 0:00 · permitted range 10.0–40.0 °C · fan reads 50 % (**stale**, left over from the previous cool session) |
+
+Names the standby mode value, which is what lets `Power` report OFF instead of UNKNOWN.
+
+### `off_after_heating.bin`
+
+| | |
+|---|---|
+| **Captured** | 2026-08-16, ~2 min after `off_standby` |
+| **Device state** | **Off**, shortly after a heat session — ⚠️ *intended* as a heat capture, but the unit was not running |
+| **Bytes** | `01 56 1b 01 00 00 00 40 3f 00 13 00 00 14 50 00 00 2b 00 12 01 9a 01 10 ff 00 15 34 00 00 66` |
+| **Expected** | mode `0x00` standby · outlet 32.0 °C (residual heat) · target 31.5 °C / 88.7 °F still set · timer 0:00:00 |
+
+**Filed under what it is, not what it was meant to be.** A fixture labelled by intention rather
+than by observed state is exactly the kind of quiet lie the provenance rule exists to stop. It
+is still useful: it shows a post-heat cooldown and corroborates standby. **We do not yet have a
+heat capture.**
+
+### `turbo_fan100_target109f.bin`
+
+| | |
+|---|---|
+| **Captured** | 2026-08-16, ~13 s into a turbo run |
+| **Device state** | **Turbo**, fan 100 %, target 109 °F — set in the app, app force-closed |
+| **Bytes** | `01 56 1b 01 00 09 2f 42 56 02 13 00 0a 56 56 00 0d 2c 00 12 01 9a 01 10 ff 00 15 34 00 00 b3` |
+| **Expected** | mode `0x02` turbo · target 43.0 °C / **109.4 °F** · permitted range fixed at 43.0 °C · max runtime **0:10** · remaining 0:09:47 · elapsed 13 s |
+
+Two findings ride on this one. Turbo's target is **above the 104 °F everyone documents as the
+maximum**, which is what proved the per-mode bounds are real and our hardcoded range was wrong.
+And `elapsed + remaining == max runtime` (13 + 587 = 600) is what identified bytes 15–16.
+
+---
+
+## Checksum
+
+Every fixture here satisfies `sum(all 31 bytes) ≡ 0 (mod 256)`, asserted for all of them in
+`test_every_real_packet_passes_its_checksum`. No upstream source documents this checksum. It is
+also an independent proof that reassembly is correct — a mis-joined packet would not sum to zero.

@@ -542,3 +542,88 @@ app. No inference from scan behaviour required. Upgraded from medium to high.
 dry, turbo — and diff. Each fills one row of `StatusMode` and lights up part of bytes 19–25 and
 27. The off capture is the most valuable single one: it names the standby value, which is what
 `Power` needs to stop saying UNKNOWN.
+
+---
+
+## RL-013 — Three modes captured: a checksum nobody documented, and per-mode limits
+
+**Date:** 2026-08-16
+**Question:** What are the remaining status-mode values, and what do the still-unknown bytes
+do? Capture one state per mode from the vendor app and diff.
+**Setup:** Three further captures (`off_standby`, `off_after_heating`, `turbo`) plus the
+existing `cool`, each set in the app and the app force-closed before connecting. Five packets
+total, three distinct modes.
+**Observation:**
+
+| | mode | remaining | max runtime | permitted range | target | byte 30 |
+|---|---|---|---|---|---|---|
+| off | `0x00` | 0:00:00 | 0:00 | 10.0–40.0 °C | 24.0 °C | `0x8e` |
+| off (after heat) | `0x00` | 0:00:00 | 0:00 | 10.0–40.0 °C | 31.5 °C | `0x66` |
+| cool | `0x04` | 9:59:25 | 12:00 | 19.0–26.0 °C | 24.0 °C | `0x31` |
+| turbo | `0x02` | 0:09:47 | 0:10 | 43.0–43.0 °C | 43.0 °C | `0xb3` |
+
+**Interpretation:**
+
+**✅ Byte 30 is a CHECKSUM — and no upstream source mentions one.** The whole packet sums to
+zero mod 256, i.e. byte 30 = `(-sum(bytes 0..29)) & 0xFF`. It holds across all five packets and
+all three modes. ESPHome, every HA integration, and `bedjet-re` all stop their layout at byte 29
+and none describes a checksum.
+
+This is worth more than a field. It is real integrity checking on an undocumented protocol, and
+it **independently proves our reassembly is correct** — a mis-joined notification-plus-read
+would not sum to zero. Our confidence in the partial-packet handling stops resting on plausible
+arithmetic and starts resting on the device's own verification.
+
+**✅ Status modes: `0x00` standby, `0x02` turbo, `0x04` cool.** And note what that means
+against the command table, which calls `0x02` *cool* and `0x04` *turbo*: **the two enums have
+cool and turbo swapped.** That is a far nastier defect than an unrelated mapping — a
+command-decoded status packet does not produce nonsense, it produces the *other real mode*.
+Cooling reads as turbo; turbo reads as cool. Nothing would look broken.
+
+**✅ Bytes 11–14 are per-mode limits, not device limits.** Max runtime and permitted target
+range both move with the mode: standby 0:00 / 10.0–40.0 °C, cool 12:00 / 19.0–26.0 °C, turbo
+0:10 / a fixed 43.0 °C.
+
+**And that exposed a bug of ours.** Turbo's 43.0 °C is **109.4 °F — above the 104 °F that
+upstream and the manufacturer's own marketing call the maximum.** Our hardcoded 19–40 °C range
+flagged a perfectly healthy turbo packet as anomalous. The device publishes its own limits;
+validating against a constant we read in a spec sheet was the wrong instinct. The decoder now
+checks the target against the device-reported bounds, and the constants survive only as an
+absolute sanity envelope for catching a decode that has genuinely gone wrong.
+
+This has a safety consequence too, and it points the same way: any clamp we apply in
+Milestone 2 must come from bytes 13–14, not from a hardcoded table. The device is the authority
+on what it will accept.
+
+**✅ Bytes 15–16 count seconds elapsed in turbo.** Two consecutive turbo packets read 13 then
+14 while remaining fell 9:47 → 9:46 against a 10:00 limit. `elapsed + remaining == max runtime`
+exactly. The field is **big-endian**, which is unusual for BLE — little-endian would give 3328
+and 3584, which fit nothing. What the data cannot yet separate is big-endian-u16 from a plain
+u8 at byte 16; a capture more than 255 s into turbo settles it, and the 600 s turbo limit makes
+that reachable.
+
+**✅ Bytes 19–25 are invariant across every capture and every mode** (`12 01 9a 01 10 ff 00`).
+They are therefore **not state** — configuration or identity. Given we have failed to find the
+firmware version in the advertisement, in characteristic `2001`, or anywhere else, this region
+is the leading candidate for it. ❓ Untestable without a second device or a firmware update.
+
+**⚠️ We still have no heat capture.** The capture labelled "heat" decoded as `mode=0x00` with
+the timer at 0:00:00 — the unit was **off**, with an outlet temperature of 32.0 °C and a target
+of 88.7 °F still set. That reads as *shortly after heating*, not *heating*. It is a useful
+fixture (it shows a cooldown and confirms standby) but it is not heat, and it is filed under
+its true state rather than its intended one. `HEAT`, `DRY` and `EXT_HEAT` remain unknown.
+
+Related and reassuring: the turbo capture was taken with the app closed and our client
+connected, and the unit kept running its timer throughout. **The device does not stop when the
+controlling BLE client disconnects** — one fewer safety worry for unattended operation.
+
+**Also:** the fan byte holds its **last-set** value in standby (an idle unit reported 50 %
+straight after a 50 % cool session). Reporting that as live airflow would be wrong, so
+`describe()` now marks it "(last set)" when the unit is off.
+**Confidence:** high
+**Provenance:** ✅ VERIFIED (our device, 5 packets, 3 modes)
+**Fixtures:** `off_standby.bin`, `off_after_heating.bin`, `turbo_fan100_target109f.bin`
+**Next question:** a real **heat** capture — set heat in the app, confirm it is actually
+running (timer counting down) before force-closing the app. Then `dry`. Two more captures
+complete the status-mode table. A turbo capture past the 4-minute mark would also settle the
+byte 15–16 endianness question for free.
