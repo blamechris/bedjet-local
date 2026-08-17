@@ -55,7 +55,7 @@ Strictly sequential. Do not skip forward because an earlier step "obviously work
 | 9 | Decode state | no |
 | 10 | **Validate decoded state against a known state set in the vendor app** | no |
 | — | ⬆ **Milestone 1 ends here. Everything above is read-only.** | |
-| 11 | First write ever: **`01 01` — OFF** | ✅ first write |
+| 11 | First write ever: **`01 01` — OFF**, via `bedjet off` | ✅ first write |
 | 12 | Fan-only mode at low speed | ✅ |
 | 13 | Fan speed changes | ✅ |
 | 14 | Cool mode | ✅ |
@@ -65,6 +65,27 @@ Strictly sequential. Do not skip forward because an earlier step "obviously work
 **Heat is last, and it is attended.** Lower-risk commands validate the entire stack — encoding,
 transport, state reconciliation, error handling — before we ask the device to make heat. If the
 stack is broken, we find out with a fan running, not a heater.
+
+## Every command is verified, never assumed
+
+There is **no acknowledgement in this protocol.** A GATT write that returns cleanly proves only
+that the radio accepted the bytes — not that the device understood them, and not that it acted.
+
+And the command table is unverified upstream guesswork from a source already caught conflating
+two enums (RL-016). So a command is not "write and hope":
+
+```
+read state  →  check the write would be observable  →  write  →  read state back
+            →  assert the state actually changed as intended
+```
+
+If the state does not change, that is **`CommandUnverified`, not success**, and the operator is
+told to use the vendor app or unplug. Commands are verified **one at a time**, starting with
+OFF, and `tests/unit/test_layering.py` enforces both that the write path is a single auditable
+module and that OFF is the only command it can construct.
+
+Refusing to send is also a feature: `bedjet off` **refuses when the unit is already off**,
+because an unobservable write teaches us nothing while still being a write to a heater.
 
 ## Operating limits
 

@@ -1,8 +1,8 @@
 """Bring-up CLI: discover → identify → watch.
 
-Mirrors the safe bring-up order in ``docs/SAFETY.md`` steps 1-10. **Every command here is
-read-only.** There is no way to send a command to the device from this CLI, and that is
-deliberate for Milestone 1.
+Mirrors the safe bring-up order in ``docs/SAFETY.md``. ``discover``, ``identify`` and
+``watch`` are read-only. ``off`` is the **one** subcommand that writes — bring-up step 11,
+gated behind a typed confirmation, and it verifies the result rather than assuming it.
 """
 
 from __future__ import annotations
@@ -17,8 +17,10 @@ from pathlib import Path
 
 from .device import registry
 from .device.state import BedJetState
+from .protocol import encode
 from .protocol.constants import CHARACTERISTICS, NAME_UUID, SERVICE_UUID
 from .protocol.packets import StatusPacket
+from .service.commander import Commander, CommandRefused, CommandUnverified
 from .service.reader import StatusReader
 from .transport.base import DiscoveredDevice
 from .transport.ble import BleakTransport, scan
@@ -291,6 +293,64 @@ async def cmd_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_off(args: argparse.Namespace) -> int:
+    """⚠️ THE ONLY COMMAND THAT WRITES TO THE DEVICE. Sends OFF, then verifies it happened.
+
+    Bring-up step 11 (docs/SAFETY.md). Off is first because it is the only command whose
+    failure mode is a device that keeps doing what it was already doing.
+    """
+    _check_ownership(args)
+    transport = BleakTransport()
+    await transport.connect(args.address, timeout=args.timeout)
+    commander = Commander(transport, settle_timeout=args.settle)
+
+    try:
+        await commander.start()
+        before, _ = await commander.wait_for_state(args.settle)
+        print(f"\ncurrent state: {before.describe()}")
+
+        if args.dry_run:
+            result = await commander.send_off(dry_run=True)
+            print(
+                f"\nDRY RUN — would write: {result.payload.hex(' ')} to the command "
+                f"characteristic.\nNothing was sent. Re-run without --dry-run to send it."
+            )
+            return 0
+
+        if not args.yes:
+            print("\n⚠️  This writes to a mains-powered heater. Before confirming:")
+            print("    · you are in the room and can see the unit")
+            print("    · you know where its plug is — unplugging is the escape hatch")
+            print("    · the vendor app is closed (it cannot connect while we hold the link)")
+            print(f"\n    About to send: {encode.turn_off().hex(' ')}  (mode -> off)")
+            if input("\n    Type 'off' to send, anything else to abort: ").strip() != "off":
+                print("aborted — nothing was sent.")
+                return 1
+
+        result = await commander.send_off()
+    except CommandRefused as exc:
+        print(f"\n⛔ refused, nothing sent: {exc}")
+        return 1
+    except CommandUnverified as exc:
+        print(f"\n❌ UNVERIFIED: {exc}")
+        return 2
+    finally:
+        await commander.stop()
+        await transport.disconnect()
+        print("\nLink released — the vendor app can connect again.")
+
+    print("\n✅ verified: the device did what we asked.")
+    print(f"    sent:   {result.payload.hex(' ')}")
+    print(f"    before: {result.before.describe()}")
+    print(f"    after:  {result.after.describe()}")
+    print("\nThe OFF command is now VERIFIED on our hardware rather than upstream guesswork.")
+    print("Record it in docs/research/RESEARCH-LOG.md and promote the row in PROTOCOL.md.")
+    if args.save:
+        args.save.write_bytes(result.after_packet.raw)
+        print(f"Saved the post-command packet to {args.save}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bedjet",
@@ -349,6 +409,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_watch.add_argument("--save", type=Path, help="write last packet to file")
     p_watch.set_defaults(func=cmd_watch)
+
+    p_off = sub.add_parser(
+        "off",
+        help="⚠️ WRITES TO THE DEVICE. Send OFF and verify it took effect (step 11)",
+    )
+    p_off.add_argument("address")
+    p_off.add_argument("--timeout", type=float, default=20.0)
+    p_off.add_argument("--force", action="store_true", help=force_help)
+    p_off.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="rehearse everything except the write — confirms the preconditions and the "
+        "read-back plumbing without sending a byte",
+    )
+    p_off.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p_off.add_argument(
+        "--settle",
+        type=float,
+        default=10.0,
+        metavar="S",
+        help="how long to wait for the device to report the new state (default 10)",
+    )
+    p_off.add_argument("--save", type=Path, help="write the post-command packet to file")
+    p_off.set_defaults(func=cmd_off)
 
     return parser
 

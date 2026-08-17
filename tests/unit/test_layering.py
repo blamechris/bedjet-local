@@ -61,29 +61,48 @@ def test_device_layer_does_not_import_transport() -> None:
         assert "transport" not in source, f"{path.name} references the transport layer"
 
 
-def test_no_code_path_sends_a_command() -> None:
-    """The encoder exists; **nothing wires it to a transport.**
+#: The write path is deliberately one module wide. Widening it is a safety decision, not a
+#: refactor, so it has to be made here in the open.
+ALLOWED_TO_WRITE = {"transport", "commander.py"}
 
-    This replaces the earlier "no encoder may exist" guard, which was deleted deliberately
-    when the encoder landed. The invariant that actually matters was never the file's
-    absence — it was that no code path can put bytes on the wire. That is what is asserted
-    here, and it is a stronger statement than the one it replaces.
 
-    Encoding is pure and safe: it builds byte strings. *Sending* is the physical act, and
-    the first one is a deliberate, attended event (docs/SAFETY.md), not something that
-    happens because a call site appeared.
+def test_only_the_commander_can_send() -> None:
+    """Exactly one module outside ``transport/`` may put bytes on the wire.
+
+    Encoding is pure and safe — it builds byte strings. *Sending* is the physical act, and
+    it lives in one auditable place so that "which code can command a heater?" has a
+    one-line answer.
     """
     senders = []
     for path in SRC.rglob("*.py"):
-        if path.parent.name == "transport":
-            continue  # transport defines write(); that is its job
+        if path.parent.name in ALLOWED_TO_WRITE or path.name in ALLOWED_TO_WRITE:
+            continue
         source = path.read_text()
         if ".write(" in source or "write_gatt_char" in source:
             senders.append(str(path.relative_to(SRC)))
     assert not senders, (
-        f"a call to transport write appeared in {senders}. Milestone 2's first write is an "
-        f"attended event with a human present — read docs/SAFETY.md before wiring this up."
+        f"a call to transport write appeared in {senders}. The write path is one module "
+        f"wide on purpose — widening it is a safety decision, so make it deliberately and "
+        f"read docs/SAFETY.md first."
     )
+
+
+def test_off_is_the_only_command_the_write_path_can_construct() -> None:
+    """Milestone 2 phase 1: OFF is verified first, alone.
+
+    Every command byte is unverified upstream guesswork (RL-016), so they get verified one
+    at a time against observed state — starting with the one whose failure mode is a device
+    that keeps doing what it was already doing. Adding a second command here means the
+    first has been proven; do that in its own commit.
+    """
+    source = (SRC / "service" / "commander.py").read_text()
+    forbidden = ["set_temperature", "set_fan", "set_timer", "set_mode(", "press("]
+    used = [name for name in forbidden if name in source]
+    assert not used, (
+        f"commander.py can now construct {used}. Only turn_off() belongs here until OFF is "
+        f"verified on hardware and each further command is verified in turn."
+    )
+    assert "turn_off" in source
 
 
 def test_encoder_is_pure() -> None:
