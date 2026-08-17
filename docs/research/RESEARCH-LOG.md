@@ -1362,3 +1362,64 @@ Two incidental confirmations, both from live traffic rather than synthetic fixtu
 **Fixture:** —
 **Next question:** #2 — does reading the whole status packet remove both the follow-up read and
 the reassembly window, and what does it cost in latency?
+
+---
+
+## RL-027 — An ad-hoc wrapper bundle's TCC identity is its content hash
+
+**Date:** 2026-08-17
+**Question:** RL-025 left the launch arrangement open: a signed `.app` wrapper, or a LaunchAgent
+inheriting a granted parent? Before building either, one property decides how it must be shaped
+— **what identity does macOS grant Bluetooth to, and what changes it?** A grant that silently
+lapses on reconfiguration would reintroduce the RL-025 SIGABRT at the next reboot rather than
+fixing it.
+**Setup:** Host-only, no device and no BLE call. Minimal `.app` bundles built with a `/bin/sh`
+main executable and an `Info.plist` carrying `NSBluetoothAlwaysUsageDescription`, ad-hoc signed
+(`codesign -s -`), inspected with `codesign -dvvv` and `codesign -d -r-`. Three bundles: two
+built from byte-identical inputs, one with a single character changed in the script.
+**Observation:**
+
+```
+designated requirement:  cdhash H"d150d18103231f6fcfa79c192a1322023dc4f5f0"
+host:                    identifier "com.apple.sh" and anchor apple
+
+identical rebuild  →  CDHash=d150d18103231f6fcfa79c192a1322023dc4f5f0   (same)
+identical rebuild  →  CDHash=d150d18103231f6fcfa79c192a1322023dc4f5f0   (same)
+one byte changed   →  CDHash=493d230efcb97b343a065b7dd0d331dcc0e1407e   (different)
+```
+
+A bundle whose main executable is a shell script signs without complaint — no Mach-O stub is
+needed — and the build is deterministic: the destination path does not enter the hash.
+
+**Interpretation:** **An ad-hoc bundle has no stable name, only a content hash.** With no Team
+Identifier and no certificate, the designated requirement degenerates to a bare `cdhash`, so
+that hash *is* the identity TCC records a grant against. Two consequences, and the second is
+the design:
+
+**1. Rebuilding is safe; editing is not.** An identical rebuild after a `git pull` reproduces the
+hash and keeps the grant. Any change to anything sealed inside the bundle produces an app macOS
+has never granted anything to — and the failure mode is not a prompt, it is the RL-025 kill,
+at whatever hour the machine next started the daemon.
+
+**2. Therefore nothing that varies may live inside the bundle.** A device address, a token, a
+repo path or a port sealed into the wrapper would mean *reconfiguring the daemon revokes its
+right to use Bluetooth*. `deploy/macos/launcher.sh` accordingly holds no settings at all; they
+are read at runtime from `~/.config/bedjet/daemon.env`, outside the seal. The log path is fixed
+rather than configurable for the mirror-image reason — a config error must land somewhere
+findable, and that somewhere cannot come from the config.
+
+The `host => com.apple.sh` line also confirms the interpreter, not the script, is the loaded
+code, which is why the arrangement launches the app through LaunchServices (`open -a`) rather
+than pointing launchd at the executable: LaunchServices makes the *bundle* the responsible
+process, which is the entire mechanism RL-025 identified.
+
+**Confidence:** high for the signing and identity behaviour — measured directly, three trials.
+**None for the TCC grant itself**, which is untested: no BLE call has been made through this
+bundle. RL-025's question is therefore only half answered, and the half that matters most to a
+daemon is the open one.
+**Provenance:** ✅ VERIFIED (our host — signing behaviour) / ❓ HYPOTHESIS (that the grant is
+issued, inherited by the child Python process, and survives a background launch)
+**Fixture:** —
+**Next question:** does `open -a BedJetDaemon.app` actually obtain the Bluetooth grant, does the
+spawned `uv`/Python child inherit it, and does it still hold when launchd starts the app at login
+rather than a human starting it at the keyboard? Attended run required; read-only is sufficient.

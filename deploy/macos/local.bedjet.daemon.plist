@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.bedjet.daemon</string>
+
+	<!-- `open -a` and not the executable directly, and this is the whole trick:
+	     launching through LaunchServices makes the *app bundle* the responsible
+	     process, so CoreBluetooth is attributed to Info.plist's
+	     NSBluetoothAlwaysUsageDescription. Point ProgramArguments straight at
+	     Contents/MacOS/BedJetDaemon and launchd becomes responsible instead —
+	     launchd carries no usage description, and the daemon dies with SIGABRT
+	     exactly as it did before this bundle existed (RL-025). -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/open</string>
+		<string>-a</string>
+		<string>REPLACE_WITH_APP_PATH</string>
+	</array>
+
+	<!-- A LaunchAgent, never a LaunchDaemon: TCC grants are per-user and need a
+	     login session. There is no arrangement in which this runs before login. -->
+	<key>RunAtLoad</key>
+	<true/>
+
+	<!-- `open` returns as soon as it has handed off to LaunchServices, so from
+	     launchd's point of view this program always exits immediately. KeepAlive
+	     would therefore relaunch it in a tight loop rather than supervise the
+	     daemon. Supervision of the BLE link is the daemon's own job (ADR-0004,
+	     decision 5); process supervision is not solved here. -->
+	<key>KeepAlive</key>
+	<false/>
+
+	<key>StandardOutPath</key>
+	<string>/tmp/bedjet-launchagent.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/bedjet-launchagent.log</string>
+</dict>
+</plist>
