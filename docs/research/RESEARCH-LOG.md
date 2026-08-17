@@ -1545,3 +1545,118 @@ open for it.
 **Next question:** #9 item 3 — does `launchctl bootstrap` at login reach the same result, and
 does the grant hold across a reboot? Until that is answered the daemon is attended-start only,
 and Milestone 4's premise of a service a voice assistant can reach unprompted is unproven.
+
+---
+
+## RL-030 — launchd can start the daemon and the grant holds; `launchctl` cannot stop it
+
+**Date:** 2026-08-17
+**Question:** RL-029's open question, #9 item 3: does the Bluetooth grant survive **launchd**
+starting the app rather than a human double-clicking it? Answering it was expected to need a
+logout; it did not, and the attempt exposed a second, worse problem in the stop path.
+**Setup:** LaunchAgent written to `~/Library/LaunchAgents/local.bedjet.daemon.plist` from the
+repo template, `plutil -lint` clean, placeholder substituted. Bundle at the RL-027/RL-029 cdhash
+`4fb4763286c3adfe9ea1e1e59983f48a6460439b`, unchanged. Read-only; no command sent, unit `off /
+standby` throughout. **No logout was performed** — the GUI session has been up since 2026-07-22,
+which is itself part of the finding below.
+**Observation:**
+
+**1. `bootstrap` registered the job and never ran it.**
+
+```
+launchctl print gui/501/local.bedjet.daemon
+    state = not running
+    runs = 0
+    last exit code = (never exited)
+    properties = runatload | inferred program
+    pended nondemand spawn = speculative
+```
+
+`RunAtLoad` is `true`, the job is in the domain, BTM lists it
+`Disposition: [enabled, allowed, notified]` — and it had never been spawned. No crash report, no
+`/tmp/bedjet-launchagent.log` (launchd creates that file when the job runs), no daemon log lines.
+
+**2. `launchctl kickstart` ran it, and the grant held.**
+
+```
+22:18:17  launcher: starting: repo=… host=127.0.0.1 port=8787
+15:18:18  link stopped -> connecting
+15:18:18  connecting to <device> (scan timeout 20.0s, up to 4 attempts)
+15:18:19  connected                                        ← attempt 1, ~1 s
+15:18:19  subscribed / status reader started / link connected
+15:18:19  listening on http://127.0.0.1:8787/api/v1
+```
+
+`GET /api/v1/state` answered `link: connected, available: true, stale: false, reading_age_s: 0.0,
+power: off, mode: standby, actual 22.5 °C, ambient 22.0 °C, anomalies: []`. `runs = 1`,
+`last exit code = 0`, `state = not running` — that is `open` exiting immediately, as designed.
+
+**3. `launchctl bootout` did not stop the daemon.**
+
+```
+launchctl bootout gui/501/local.bedjet.daemon     → exit 0, job removed from the domain
+(6 s later)                                        → no new log lines, no "Link released"
+ps -p 53284                                        → still running, PPID 1
+```
+
+**4. A direct `SIGTERM` to the `uv` PID did stop it, cleanly.**
+
+```
+kill -TERM 53284          (the `uv run` process; Python is its child, 53288)
+15:20:53  status reader stopped (616 packets, 615 split, 1 rejected, 0 skipped while busy)
+15:20:53  BLE link dropped / disconnected / link connected -> stopped
+          SIGTERM received — releasing the link.
+          Link released — the vendor app can connect again.
+```
+
+Both PIDs gone, port 8787 closed.
+
+**Interpretation:** Three separate results, and the middle one is the good news.
+
+**The grant survives a launchd-initiated start (#9 items 1–2, and the hard half of item 3).**
+`launchd` → `open -a` → LaunchServices → bundle → `uv` → Python obtained Bluetooth and connected
+in ~1 s, faster than RL-029's ~4 s double-click. The responsible-process trick works when the
+initiator is a daemon rather than a human, which is the property Milestone 4 needs. What is
+*still* untested is only the **timing** case: a spawn at login, concurrent with everything else
+macOS starts, with nobody present. That is now a narrower question than #9 originally posed.
+
+**`RunAtLoad` did not fire on `bootstrap`, and that is unexplained.** It matters more than it
+looks: the daemon's whole premise is starting unprompted, and this failure mode is *silent* —
+no error, no crash, no log line, just a job that never ran. A `bootstrap` that registers without
+spawning is indistinguishable from a successful start until something asks the device a question.
+Whether this also affects the login-time spawn is exactly what a logout would answer.
+
+**The documented stop path does not work, and the cause is structural rather than a typo.**
+`deploy/macos/README.md` claimed `launchctl bootout` sends SIGTERM and the daemon releases the
+link. It does not, because the plist deliberately runs `/usr/bin/open` — which is the entire
+reason the TCC attribution works (RL-025, and the comment in the plist itself). `open` hands off
+to LaunchServices and exits, so launchd's job is already over: `runs = 1, last exit code = 0`
+while the daemon is alive with **PPID 1**, reparented and outside launchd's reach. Booting the
+job out therefore removes a record and signals nothing.
+
+This is the same trade-off RL-025 forced, showing up on the other side. The bundle must be the
+responsible process for Bluetooth, which means launchd must not be the daemon's parent, which
+means launchd cannot supervise or stop it. **The consequence is operational: a reboot or logout
+does not release the link gracefully either**, so the #12 fix — correct, and verified below — is
+unreachable by every automated stop path that exists today. Filed as
+[#16](https://github.com/blamechris/bedjet-local/issues/16); the README has been corrected to
+stop asserting a stop command that returns 0 and does nothing.
+
+**#12 and #14 are verified on hardware for the first time.** Until now the SIGTERM handler was
+tested only against the event loop and `uv`'s forwarding only against a synthetic child. Here a
+signal sent to the `uv` PID reached Python, ran the handler, disconnected the device and printed
+`Link released` — the whole chain, against the real link. That the graceful path works is what
+makes the broken *trigger* an ordinary bug rather than a redesign.
+
+Incidental: **615 of 616 status packets arrived split**, tightening RL-026's 601-of-603 on a
+different day and a different link. The RL-017 checksum guard rejected exactly one packet, and
+`0 skipped while busy` means the one-read-in-flight guard never had to engage in this run.
+
+**Confidence:** high for 2–4 — direct observation with `bootout` and `kill -TERM` as matched
+controls on the same running daemon, which is what makes "bootout does nothing" a measurement
+rather than an inference. Medium for 1: reproduced once, cause unknown.
+**Provenance:** ✅ VERIFIED (our host and our device)
+**Fixture:** —
+**Next question:** does the login-time spawn actually happen, given that `bootstrap`'s did not?
+That still needs a logout, and it is now the *only* thing standing between this and an unattended
+daemon — the grant question it was meant to answer is settled.

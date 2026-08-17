@@ -14,15 +14,25 @@ route, which is what this directory does. Full account: **RL-025** and **RL-028*
 This directory is the launch arrangement that fixes it: a minimal app bundle that carries
 the key, plus a LaunchAgent that starts the daemon *through* it.
 
-> **Status: ✅ verified for an attended start, ❓ unverified at login.** Double-clicked from
-> Finder, the bundle obtains the Bluetooth grant and the `uv` → Python child inherits it: the
-> daemon connected on attempt 1 and served state, where the identical interpreter had died with
-> SIGABRT under a harness the evening before (**RL-029**, with RL-025 as the matched control).
+> **Status: ✅ the grant works under `launchd`. ❓ the login-time *spawn* is unverified, and
+> ⛔ there is no working automated stop.**
 >
-> What has **not** been shown is the case the daemon actually needs — `launchd` starting the app
-> **at login**, with nobody present to answer a prompt. Until
-> [#9](https://github.com/blamechris/bedjet-local/issues/9) settles that, this is an
-> attended-start arrangement, so treat step 4 below as untested.
+> Double-clicked from Finder, the bundle obtains the Bluetooth grant and the `uv` → Python child
+> inherits it (**RL-029**, with RL-025 as the matched control). Started by `launchd` via
+> `launchctl kickstart`, the same thing happens — connected on attempt 1 in ~1 s and served state
+> (**RL-030**). So the responsible-process trick works when a daemon initiates it, not only a
+> human, which was the substance of
+> [#9](https://github.com/blamechris/bedjet-local/issues/9) item 3.
+>
+> Two things are still open, and the second is worse than the first:
+>
+> 1. **The spawn at login has not been observed.** RL-030 found `bootstrap` registering the job
+>    with `RunAtLoad` and never running it (`runs = 0`), for reasons not yet understood. That
+>    failure is *silent*, so it cannot be assumed away.
+> 2. **`launchctl` cannot stop this daemon** — see the stop section below. A reboot or logout
+>    therefore does not release the BLE link gracefully.
+>
+> Treat step 4 as untested and read both warnings before installing it.
 
 ## What is here
 
@@ -117,21 +127,48 @@ sed "s|REPLACE_WITH_APP_PATH|$HOME/Applications/BedJetDaemon.app|" \
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.bedjet.daemon.plist
 ```
 
-To remove it:
+## ⛔ Stopping it: `launchctl bootout` does not work, and cannot ([#16](https://github.com/blamechris/bedjet-local/issues/16))
+
+Removing the job unregisters it and **leaves the daemon running with the device still held**:
 
 ```bash
-launchctl bootout gui/$(id -u)/local.bedjet.daemon
+launchctl bootout gui/$(id -u)/local.bedjet.daemon   # exits 0, and stops nothing
 ```
 
-That sends SIGTERM, which the daemon now handles: it disconnects the device and logs
-`Link released` rather than being terminated mid-link. Until #12 it reached its cleanup only
-through `KeyboardInterrupt`, so every supervised stop — and every reboot — skipped it.
+Measured in RL-030: `bootout` returned 0, the job left the domain, and six seconds later the
+daemon was still connected with no `Link released` in the log.
 
-The signal has one intermediary to cross, because `launcher.sh` `exec`s `uv run` and `uv`
-spawns the interpreter as a child — so SIGTERM arrives at `uv`, not at Python. **`uv run`
-forwards it** (measured directly: a child under `uv run` receives SIGTERM when the `uv` PID
-is signalled), which is what makes the handler reachable from `launchctl` at all. Worth
-re-checking if the launcher ever stops going through `uv`.
+The cause is the same design decision that makes Bluetooth work at all, so it is not a bug to
+be patched here. `ProgramArguments` runs `/usr/bin/open` so that **LaunchServices**, not
+`launchd`, is the responsible process — that is the whole trick (RL-025). But `open` hands off
+and exits immediately, which is also why `KeepAlive` is `false`. By the time the daemon is up,
+launchd's job has already finished (`runs = 1`, `last exit code = 0`) and the daemon is
+reparented to **PID 1**. There is nothing left for launchd to signal.
+
+**To actually stop it, signal the process:**
+
+```bash
+pkill -TERM -f "bedjet serve"
+```
+
+That produces the clean shutdown — `SIGTERM received — releasing the link.` followed by
+`Link released — the vendor app can connect again.` — verified against the real device in
+RL-030. Confirm it before walking away:
+
+```bash
+tail -5 ~/Library/Logs/bedjet-daemon.log
+```
+
+The signal crosses one intermediary: `launcher.sh` `exec`s `uv run`, and `uv` spawns the
+interpreter as a child, so SIGTERM arrives at `uv` rather than at Python. **`uv` forwards it** —
+measured synthetically in #14 and then against the live link in RL-030, where signalling the
+`uv` PID ran Python's handler and released the device. Worth re-checking if the launcher ever
+stops going through `uv`.
+
+**The operational consequence, which is the reason this is an issue and not a footnote:** every
+automated stop goes through the path that does not work. A reboot, a logout, or any supervisor
+will take the daemon down without reaching the #12 handler, so the link is dropped rather than
+released. The #12 fix is correct — it simply has no working trigger except a manual signal.
 
 ## ⚠️ What `RunAtLoad` actually means here
 
@@ -178,8 +215,10 @@ convention RL-005 sets for the device address, and for the same reason.
   the login window has no daemon.
 - **Sleep.** A sleeping Mac is not serving anything. The fleet roadmap treats
   Mac-asleep as an open question, and this does not close it.
-- **Process supervision.** `open` returns immediately, so `KeepAlive` would spin rather than
-  supervise. The daemon supervises its own BLE link (ADR-0004, decision 5); nothing here
-  restarts the daemon if it exits.
+- **Process supervision — in either direction.** `open` returns immediately, so `KeepAlive`
+  would spin rather than supervise, and nothing here restarts the daemon if it exits. RL-030
+  showed the same detachment also makes the daemon **unstoppable by `launchctl`**, which is the
+  more urgent half: the graceful release exists and no automated path reaches it. The daemon
+  supervises its own BLE link (ADR-0004, decision 5); its *process* is supervised by nobody.
 - **The Pi.** None of this applies to Linux — BlueZ has no TCC. Weighed in
   [ADR-0005](../../docs/decisions/ADR-0005-milestone-4-scope-and-siting.md).
