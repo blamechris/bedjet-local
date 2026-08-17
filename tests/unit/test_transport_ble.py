@@ -32,6 +32,22 @@ POWERED_OFF = BleakBluetoothNotAvailableError(
     "Bluetooth device is turned off", BleakBluetoothNotAvailableReason.POWERED_OFF
 )
 
+#: Bases that mark an exception as a **bug**, not a link condition — and therefore as one
+#: that must *not* be translated.
+#:
+#: ``TransportError`` is the reconnect loop's cue to back off and try again. Feeding a
+#: programming error into it would retry a defect forever at WARNING, which is the mirror
+#: image of #5: #5 made an expected condition look like a crash, and this would make a crash
+#: look like an expected condition. A traceback is the correct outcome for these, so the
+#: catch in ``_bleak_errors_as_transport`` is ``BleakError`` and not ``Exception``.
+#:
+#: Real instance: ``bleak.backends.bluezdbus.signals.InvalidMessageTypeError`` is a
+#: ``TypeError`` raised when a D-Bus match rule is built with a message type outside a fixed
+#: list. Only bleak's own code builds those, always with ``"signal"``, so it fires only if
+#: bleak has a bug — exactly when a stack trace is what you want. It is invisible on macOS
+#: (the BlueZ backend does not import) and appears on Linux, which is where CI found it.
+NOT_LINK_CONDITIONS = (TypeError, ValueError, AttributeError, KeyError, IndexError)
+
 
 class _FakeClient:
     """A connected bleak client whose every GATT call fails the same way."""
@@ -69,7 +85,7 @@ def _transport_holding(exc: BaseException) -> ble.BleakTransport:
 # ── the premise ─────────────────────────────────────────────────────────────────────────
 
 
-def test_every_bleak_exception_derives_from_bleak_error() -> None:
+def test_every_bleak_exception_is_a_link_condition_or_a_bug() -> None:
     """The base-class catch is only complete while this holds — so assert it, don't assume.
 
     Enumerating leaf types is what #5 *was*: ``BleakBluetoothNotAvailableError`` was missing
@@ -82,7 +98,14 @@ def test_every_bleak_exception_derives_from_bleak_error() -> None:
     ``dir(bleak_retry_connector)`` sees 10 of the 27 exception classes on bleak 3.0.2, and
     the ones it misses — anything defined in a backend and not re-exported — are precisely
     where a platform-specific stray would appear. A guard that inspects a third of the
-    surface is the same shape of mistake as the list this replaced.
+    surface is the same shape of mistake as the list this replaced. The walk found
+    ``InvalidMessageTypeError`` on the Linux runner within one CI run of being written, and
+    it is invisible from macOS.
+
+    ``NOT_LINK_CONDITIONS`` is exempt, and that exemption is the policy rather than a
+    concession — see its comment. This therefore asserts something sharper than "everything
+    derives from BleakError": **every bleak exception is either a link condition we
+    translate, or a bug we deliberately let crash.** Nothing may sit between the two.
     """
     strays: list[str] = []
     checked: set[type[BaseException]] = set()
@@ -103,14 +126,16 @@ def test_every_bleak_exception_derives_from_bleak_error() -> None:
                     and obj not in checked
                 ):
                     checked.add(obj)
-                    if not issubclass(obj, BleakError):
+                    if not issubclass(obj, (BleakError, *NOT_LINK_CONDITIONS)):
                         strays.append(f"{obj.__module__}.{obj.__qualname__}")
 
     assert checked, "walked no exception classes at all — the walk itself is broken"
     assert not strays, (
-        f"{sorted(strays)} do not derive from BleakError, so _bleak_errors_as_transport "
-        f"does not catch them and the session layer will log them as unexpected (#5). "
-        f"Widen the catch in transport/ble.py — do not relax this test."
+        f"{sorted(strays)} derive from neither BleakError nor a programming-error base, so "
+        f"_bleak_errors_as_transport does not translate them and the session layer will log "
+        f"them as unexpected (#5). Decide which they are: a link condition belongs in the "
+        f"catch in transport/ble.py, a bug belongs in NOT_LINK_CONDITIONS with a reason. "
+        f"Do not relax this test."
     )
 
 
@@ -217,6 +242,19 @@ async def test_not_connected_is_not_rewrapped() -> None:
     that tells an operator the link is simply down."""
     with pytest.raises(TransportError, match="not connected"):
         await ble.BleakTransport().read("0000dead-0000-1000-8000-00805f9b34fb")
+
+
+async def test_a_programming_error_is_not_translated() -> None:
+    """The other half of the policy in ``NOT_LINK_CONDITIONS``, asserted on the real code.
+
+    ``bleak.backends.bluezdbus.signals.InvalidMessageTypeError`` is a ``TypeError`` that can
+    only fire if bleak builds a malformed D-Bus match rule. Translating it would hand a
+    defect to the reconnect loop, which would back off and retry it every few seconds,
+    forever, at WARNING — the mirror image of #5. It must keep its traceback.
+    """
+    transport = _transport_holding(TypeError("invalid message type: nonsense"))
+    with pytest.raises(TypeError):
+        await transport.read("0000dead-0000-1000-8000-00805f9b34fb")
 
 
 async def test_cancellation_is_not_swallowed() -> None:

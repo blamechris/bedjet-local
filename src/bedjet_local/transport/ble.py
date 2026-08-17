@@ -46,13 +46,19 @@ def _bleak_errors_as_transport(operation: str) -> Iterator[None]:
     Any bleak type that escapes this module is therefore not merely untranslated, it is
     actively mislabelled (#5, RL-024).
 
-    The catch is deliberately the **base class**. Every exception bleak and
-    ``bleak-retry-connector`` define derives from ``BleakError`` — measured, not assumed —
-    so enumerating leaf types would be a list that silently falls out of date on the next
-    upstream release, with a fresh traceback at 3am as the only notice. "Powering the
-    adapter off" is among the most expected things that can happen to a BLE daemon; it
-    reached the operator as an unexpected error only because ``BleakBluetoothNotAvailableError``
-    was not in such a list.
+    The catch is deliberately the **base class**. Every bleak exception that describes a
+    *link condition* derives from ``BleakError`` — walked and asserted in
+    ``tests/unit/test_transport_ble.py``, not assumed — so enumerating leaf types would be a
+    list that silently falls out of date on the next upstream release, with a fresh
+    traceback at 3am as the only notice. "Powering the adapter off" is among the most
+    expected things that can happen to a BLE daemon; it reached the operator as an
+    unexpected error only because ``BleakBluetoothNotAvailableError`` was not in such a list.
+
+    It is equally deliberately **not** ``Exception``. Bleak also defines exceptions that are
+    bugs rather than conditions — ``bluezdbus.signals.InvalidMessageTypeError`` is a
+    ``TypeError`` — and those must keep their traceback. Translating one would hand a defect
+    to the reconnect loop, which would back it off and retry it forever at WARNING: the
+    mirror image of the misclassification this function exists to fix.
 
     The bleak type name is kept in the message. Severity should drop, diagnosis should not.
     """
