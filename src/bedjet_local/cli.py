@@ -1,8 +1,14 @@
-"""Bring-up CLI: discover → identify → watch.
+"""The CLI: bring-up, control, and the two daemons.
 
-Mirrors the safe bring-up order in ``docs/SAFETY.md``. ``discover``, ``identify`` and
-``watch`` are read-only. ``off`` is the **one** subcommand that writes — bring-up step 11,
-gated behind a typed confirmation, and it verifies the result rather than assuming it.
+Ordered the way ``docs/SAFETY.md`` orders things. ``discover``, ``identify`` and ``watch``
+are read-only. ``off``, ``fan``, ``mode`` and ``temp`` write — each behind a typed
+confirmation, each verifying the result against the device's own status rather than assuming
+it, and each with a ``--dry-run`` that rehearses everything but the write.
+
+``serve`` and ``mqtt`` are different in kind from all of them: they **hold** the BLE link
+instead of borrowing it. The BedJet permits one client at a time and this unit has no working
+physical remote, so both print the yield command on startup — the owner must be able to
+reclaim their heater without hunting for a process to kill.
 """
 
 from __future__ import annotations
@@ -661,7 +667,8 @@ async def cmd_mqtt(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bedjet",
-        description="Local BedJet bring-up. Read-only: this CLI cannot send commands.",
+        description="Local BedJet control. Commands marked ⚠️ write to a mains-powered "
+        "heater; each asks for confirmation and verifies the result. See docs/SAFETY.md.",
     )
     parser.add_argument("--debug", action="store_true", help="verbose logging, incl. raw packets")
     sub = parser.add_subparsers(dest="command", required=True)

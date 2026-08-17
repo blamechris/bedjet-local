@@ -55,13 +55,18 @@ Three documents are part of the deliverable, not commentary on it:
 
 ## Milestones
 
-1. **Discover → connect → read state.** Read-only. ← *we are here*
-2. Safe control: off, fan, fan speed, cool, then heat (attended, last).
-3. Stable local API: HTTP+WS and MQTT adapters over the core library.
+1. ✅ **Discover → connect → read state.** Read-only.
+2. ✅ **Safe control**: off, fan, cool, target, then heat (attended, last). Five commands
+   verified on hardware; turbo and extended heat deliberately still locked.
+3. ✅ **Stable local API**: `api/` plus HTTP+WS and MQTT adapters over the core library.
+   Exposure decisions in [ADR-0004](docs/decisions/ADR-0004-exposing-the-device.md).
+   ← *we are here*
 4. Jarvis integration.
 
-Do not race ahead. Milestone 2 does not begin until decoded state has been validated against
-the physical unit; Milestone 4 does not begin until the device layer is reliable.
+Do not race ahead. Milestone 4 does not begin until the device layer is reliable —
+**and one thing is outstanding**: the reconnection path added for Milestone 3 has never run
+against the physical device, because it cannot be exercised without one. Give it an attended
+run before anything is left running unattended.
 
 ## Device facts to remember
 
