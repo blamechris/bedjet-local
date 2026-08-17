@@ -123,6 +123,10 @@ To remove it:
 launchctl bootout gui/$(id -u)/local.bedjet.daemon
 ```
 
+That sends SIGTERM, which the daemon now handles: it disconnects the device and logs
+`Link released` rather than being terminated mid-link. Until #12 it reached its cleanup only
+through `KeyboardInterrupt`, so every supervised stop — and every reboot — skipped it.
+
 ## ⚠️ What `RunAtLoad` actually means here
 
 The BedJet permits **one** BLE client at a time and this unit has **no working physical
