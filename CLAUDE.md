@@ -60,13 +60,19 @@ Three documents are part of the deliverable, not commentary on it:
    verified on hardware; turbo and extended heat deliberately still locked.
 3. ✅ **Stable local API**: `api/` plus HTTP+WS and MQTT adapters over the core library.
    Exposure decisions in [ADR-0004](docs/decisions/ADR-0004-exposing-the-device.md).
-   ← *we are here*
-4. Jarvis integration.
+4. **Jarvis integration** — scope and siting in
+   [ADR-0005](docs/decisions/ADR-0005-milestone-4-scope-and-siting.md). ← *we are here*
 
-Do not race ahead. Milestone 4 does not begin until the device layer is reliable —
-**and one thing is outstanding**: the reconnection path added for Milestone 3 has never run
-against the physical device, because it cannot be exercised without one. Give it an attended
-run before anything is left running unattended.
+The gate on Milestone 4 — an attended run of the reconnection path Milestone 3 added, which
+could not be exercised without the device — was discharged by
+[#4](https://github.com/blamechris/bedjet-local/issues/4); the evidence is RL-024.
+
+Read ADR-0005 before starting work here. Milestone 4 delivers a **contract an agent can
+call**, not client code: no-it-all has no tool-calling yet, so the voice path is blocked in
+that repository, and an adapter written against it now would be written against nothing. What
+belongs to this repository is reachability (tailnet + token), unattended operation
+(`deploy/macos/`, and see RL-025 before assuming a daemon can simply be launched), and
+describing the contract for an agent rather than for a person reading a reference.
 
 ## Device facts to remember
 
