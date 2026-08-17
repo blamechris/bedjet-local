@@ -231,8 +231,8 @@ same characteristic. ✅ VERIFIED — 55 notifications in ~60 s, each reassembli
 | **`07 <step>`** | **Set fan speed** | ✅ **VERIFIED (RL-020)** — sent `07 13`, fan went 50 % → 100 %, audibly | high |
 | **`01 02`** | **Cool** | ✅ **VERIFIED (RL-021)** — started the unit cooling; produced *status* `0x04` | high |
 | `01 <mode>` | Other mode operands (heat, turbo, dry, ext. heat) | 📖 untested | medium |
+| **`03 <temp>`** | **Set target temperature** (`2 × °C`) | ✅ **VERIFIED (RL-022)** — sent `03 2c`, target 19.0 → 22.0 °C | high |
 | `02 <hh> <mm>` | Set timer | 📖 MQTT bridge, untested | medium |
-| `03 <temp>` | Set target temperature (`2 × °C`) | 📖 MQTT bridge, untested | medium |
 
 Two opcodes verified is worth more than one: it establishes `[opcode, operand]` as a general
 framing rather than a coincidence that happened to work once.
@@ -245,9 +245,11 @@ the vendor app's settings — this is the first command-and-result observed in o
 within a session leaves the timer running. Cool's *maximum* runtime is 12:00 and its *default*
 session is 10:00 — different numbers, both reported.
 
-The fan result also confirms the step mapping **from the write side** — RL-002 derived
-`percent = 5 + 5 × step` by reading byte 10; RL-020 sent step 19 and read back 100 %. The same
-formula verified in both directions catches off-by-ones that a one-directional test cannot.
+Three encodings are now verified **in both directions** — fan (RL-020), mode (RL-021) and
+temperature (RL-022). The pattern is worth naming: **an encoding verified only by reading is
+half-verified.** Reading confirms our interpretation of what the device says; writing confirms
+the device agrees with our interpretation. An off-by-one or an inverted scale survives the
+first test and not the second.
 | — | Set clock (`CMD_SET_CLOCK`, `<hh> <mm>`) | 📖 ESPHome — opcode not yet established | low |
 
 ### Mode / button values (operand of `0x01`)

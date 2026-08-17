@@ -61,7 +61,7 @@ Strictly sequential. Do not skip forward because an earlier step "obviously work
 | 12 | ~~Fan-only mode~~ — **no fan-only mode exists** in this device's status enum; skipped | — |
 | 13 | ✅ **DONE** — fan speed changes (RL-020) | ✅ |
 | 14 | ✅ **DONE** — Cool mode (RL-021). Dry available, untested | ✅ |
-| 15 | Heat mode, low target, short timer, **attended** | ✅ |
+| 15 | Heat mode, low target, short timer, **attended** — requires deliberately unlocking `THERMALLY_SAFE_MODES` | ✅ |
 | 16 | Timer and presets | ✅ |
 
 **Heat is last, and it is attended.** Lower-risk commands validate the entire stack — encoding,

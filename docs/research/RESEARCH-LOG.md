@@ -1091,3 +1091,51 @@ safe to test **in cool mode**, where the device reports a permitted range of 19.
 enforces it — setting a cool target cannot make the bed hotter. It is also the first command
 whose operand is not a small enum but an encoded *value*, so it tests the temperature encoding
 from the write side, exactly as RL-020 did for the fan mapping.
+
+---
+
+## RL-022 — Opcode `0x03` verified; the command table is proven for normal operation
+
+**Date:** 2026-08-16
+**Question:** Does `03 <temp>` set the target, and does the temperature encoding hold from the
+write side?
+**Setup:** Unit cooling, target 19.0 °C. `bedjet temp … 72` → 72 °F → 22.22 °C → rounded to
+22.0 °C → wrote `03 2c` (44).
+**Observation:** `target 19.0C → 22.0C`. The device reported its permitted range as
+19.0–26.0 °C (66–79 °F) beforehand, and 22.0 °C sits inside it.
+
+**Interpretation:**
+
+**✅ Opcode `0x03` is VERIFIED**, and with it the temperature encoding **in both directions**.
+RL-001 established `byte = 2 × °C` by reading (byte `0x30` = 48 with the app set to 75 °F);
+here we *sent* `0x2c` = 44 and the device reported 22.0 °C. Same formula, opposite directions —
+the same round-trip that made the fan mapping solid in RL-020.
+
+This is the third such round-trip (fan, mode, temperature), and the pattern is worth naming:
+**an encoding verified only by reading is half-verified.** A read-side test confirms our
+interpretation of what the device says; a write-side test confirms the device agrees with our
+interpretation. An off-by-one or an inverted scale can survive the first and not the second.
+
+**Milestone 2's core is complete.** The verified command set now covers everything needed for
+normal non-heating operation:
+
+| Command | Bytes | Verified |
+|---|---|---|
+| Off | `01 01` | ✅ RL-019, reproduced RL-020 |
+| Cool | `01 02` | ✅ RL-021 |
+| Set target | `03 <2×°C>` | ✅ RL-022 |
+| Set fan | `07 <step>` | ✅ RL-020 |
+
+Every one was sent by software we wrote, to a device whose protocol has no public
+specification, and every one was confirmed by observed state change rather than by the write
+returning cleanly — which, per RL-018, it does whether or not anything happens.
+
+**Still unproven:** timer (`02 <hh> <mm>`), presets/buttons (`0x10`–`0x22`), dry (`01 05`), and
+the heating modes. The heating modes are refused in code rather than merely untested.
+**Confidence:** high
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** —
+**Next question:** heat (`01 03`) is the one remaining capability that matters functionally —
+a bed climate device that cannot warm the bed is half a device — and `SAFETY.md` has always
+put it last and attended. It requires unlocking `THERMALLY_SAFE_MODES`, which is a deliberate
+edit, and running it with a low target, a short timer, and a human watching.
