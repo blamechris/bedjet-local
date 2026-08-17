@@ -127,6 +127,12 @@ That sends SIGTERM, which the daemon now handles: it disconnects the device and 
 `Link released` rather than being terminated mid-link. Until #12 it reached its cleanup only
 through `KeyboardInterrupt`, so every supervised stop — and every reboot — skipped it.
 
+The signal has one intermediary to cross, because `launcher.sh` `exec`s `uv run` and `uv`
+spawns the interpreter as a child — so SIGTERM arrives at `uv`, not at Python. **`uv run`
+forwards it** (measured directly: a child under `uv run` receives SIGTERM when the `uv` PID
+is signalled), which is what makes the handler reachable from `launchctl` at all. Worth
+re-checking if the launcher ever stops going through `uv`.
+
 ## ⚠️ What `RunAtLoad` actually means here
 
 The BedJet permits **one** BLE client at a time and this unit has **no working physical
