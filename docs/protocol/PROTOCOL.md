@@ -230,7 +230,8 @@ same characteristic. ✅ VERIFIED — 55 notifications in ~60 s, each reassembli
 | **`01 01`** | **Off** | ✅ **VERIFIED (RL-019, reproduced RL-020)** — the unit switched off | high |
 | **`07 <step>`** | **Set fan speed** | ✅ **VERIFIED (RL-020)** — sent `07 13`, fan went 50 % → 100 %, audibly | high |
 | **`01 02`** | **Cool** | ✅ **VERIFIED (RL-021)** — started the unit cooling; produced *status* `0x04` | high |
-| `01 <mode>` | Other mode operands (heat, turbo, dry, ext. heat) | 📖 untested | medium |
+| **`01 03`** | **Heat** | ✅ **VERIFIED (RL-023)** — produced *status* `0x01` | high |
+| `01 <mode>` | Remaining operands (turbo, dry, ext. heat) | 📖 untested | medium |
 | **`03 <temp>`** | **Set target temperature** (`2 × °C`) | ✅ **VERIFIED (RL-022)** — sent `03 2c`, target 19.0 → 22.0 °C | high |
 | `02 <hh> <mm>` | Set timer | 📖 MQTT bridge, untested | medium |
 
@@ -241,9 +242,24 @@ RL-021 demonstrated the **enum offset live**: command `0x02` in, status `0x04` o
 meaning cool. Every earlier statement about the two enums came from comparing captures against
 the vendor app's settings — this is the first command-and-result observed in one exchange.
 
-**Session behaviour:** setting a mode starts a fresh **10:00:00** timer; changing fan speed
-within a session leaves the timer running. Cool's *maximum* runtime is 12:00 and its *default*
-session is 10:00 — different numbers, both reported.
+**Session behaviour** (RL-021, RL-023): setting a mode starts a fresh session; changing fan
+speed within one leaves the timer running. **Both the default session length and the target are
+per-mode**, remembered by the device and restored on selection:
+
+| Mode | Default session | Max runtime | Target on selection |
+|---|---|---|---|
+| cool `0x04` | 10:00:00 | 12:00 | its own remembered value |
+| heat `0x01` | **0:30:00** | 12:00 | its own remembered value (31.5 °C on our unit, twice) |
+
+Two consequences worth stating plainly. **The device self-limits heat to 30 minutes** by
+default — considerably safer than the 10 hours a reader might assume by generalising from cool.
+And **a target set in one mode does not follow you into another**: selecting heat restores
+heat's target, which is very likely the explanation for dry reporting a target below its own
+minimum (RL-015) — a value never set within that mode's range and stored unclamped.
+
+⚠️ `actual` is **outlet air temperature**, and `ambient` tracks the unit's own airflow rather
+than the room: ambient fell 22.5 → 18.5 °C across a cooling session. Neither is a bed or room
+thermometer.
 
 Three encodings are now verified **in both directions** — fan (RL-020), mode (RL-021) and
 temperature (RL-022). The pattern is worth naming: **an encoding verified only by reading is

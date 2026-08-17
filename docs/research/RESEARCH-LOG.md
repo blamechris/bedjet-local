@@ -1139,3 +1139,63 @@ the heating modes. The heating modes are refused in code rather than merely unte
 a bed climate device that cannot warm the bed is half a device — and `SAFETY.md` has always
 put it last and attended. It requires unlocking `THERMALLY_SAFE_MODES`, which is a deliberate
 edit, and running it with a low target, a short timer, and a human watching.
+
+---
+
+## RL-023 — Heat verified; targets and session lengths are **per-mode**
+
+**Date:** 2026-08-16
+**Question:** Does `01 03` select heat, and does the target carry over from the previous mode?
+**Setup:** Unit cooling, target 22.0 °C, 9:50:17 remaining. `bedjet mode … heat`, then
+`bedjet off` about 45 s later.
+**Observation:**
+
+```
+cool → heat:  target 22.0C → 31.5C     remaining 9:50:17 → 0:30:00
+45s of heat:  actual 22.0C → 30.0C     (outlet air, +8 °C)
+heat → off:   mode heat → standby      target 31.5C retained
+```
+
+**Interpretation — three findings, one of which corrects a claim I made before the run:**
+
+**✅ Command `0x03` = HEAT is VERIFIED**, producing status `0x01`. The offset enums hold for a
+fourth mode.
+
+**1. Targets are remembered per mode, not carried across.** The target did not stay at cool's
+22.0 °C; it became **31.5 °C**, which is *exactly* the value the heat capture in RL-014
+recorded (`heat_fan100_target89f.bin`, byte 8 = `0x3f` = 63 = 31.5 °C). The device keeps a
+target per mode and restores it on selection.
+
+This also gives RL-015's oddity a likely explanation. Dry reported a target of 22.0 °C below
+its own 24.0–31.0 °C minimum — if targets are per-mode and remembered, dry's was simply never
+set within its range, and the device stores it without clamping. Testable: set a dry target
+inside its range, switch away, switch back, and see whether it returns.
+
+**2. Session length is per-mode too — and heat's default is 30 minutes, not 10 hours.** Cool
+started a 10:00:00 session (RL-021); heat started **0:30:00**. Both are well inside their
+respective 12:00 maxima, so these are *defaults*, not limits.
+
+**⚠️ This corrects something I told the operator before the run.** I said heat would run on a
+10-hour default and that `off` was therefore the only stop. That was wrong: I generalised
+cool's default to heat without checking, which is precisely the upstream-assumed-as-observed
+error this project's provenance rules exist to prevent — committed here in a safety briefing
+rather than in a document. **The device self-limits heat to 30 minutes**, which is a
+meaningfully safer default than I described.
+
+**3. The outlet reached 30.0 °C from 22.0 °C in about 45 seconds** with the target at 31.5 °C —
+the unit heats fast and was approaching its setpoint. Note `actual` is outlet air, not bed
+temperature.
+
+**✅ OFF verified from a heating state** — its third confirmation, and the one that matters
+most. A software stop proven only against a cooling unit would not have earned the confidence
+placed in it.
+
+Incidentally, ambient fell 22.5 → 18.5 °C across the cooling session, then held during heat.
+The ambient sensor evidently sits in the unit's own airflow, so it tracks what the BedJet is
+doing rather than the room. Worth knowing before anything treats it as a room thermometer.
+**Confidence:** high
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** —
+**Next question:** confirm the per-mode target hypothesis directly — set a distinct target in
+each of cool and heat, switch between them, and check each returns. It costs two commands we
+have already verified and would settle RL-015's dry anomaly as a side effect.

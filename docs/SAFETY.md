@@ -61,7 +61,7 @@ Strictly sequential. Do not skip forward because an earlier step "obviously work
 | 12 | ~~Fan-only mode~~ — **no fan-only mode exists** in this device's status enum; skipped | — |
 | 13 | ✅ **DONE** — fan speed changes (RL-020) | ✅ |
 | 14 | ✅ **DONE** — Cool mode (RL-021). Dry available, untested | ✅ |
-| 15 | Heat mode, low target, short timer, **attended** — requires deliberately unlocking `THERMALLY_SAFE_MODES` | ✅ |
+| 15 | ✅ **DONE** — heat, attended (RL-023). The device self-limits heat to a **30 minute** default session | ✅ |
 | 16 | Timer and presets | ✅ |
 
 **Heat is last, and it is attended.** Lower-risk commands validate the entire stack — encoding,
@@ -183,3 +183,10 @@ starting states. That is what changed — not the appetite for risk.
 nothing needs it) and extended heat (status `0x03` has never been observed, so its result
 could not be verified even if the command worked — a command whose success is indistinguishable
 from its failure should not be sendable).
+
+**What the heat run then taught us, and a correction.** Before it, this document's author told
+the operator heat would run on the device's 10-hour default, generalising from cool without
+checking. It does not: **heat's default session is 30 minutes** (RL-023). The device self-limits
+more tightly than described. The error is recorded rather than quietly fixed because it is the
+same upstream-assumed-as-observed mistake the provenance rules exist to prevent, committed in a
+safety briefing rather than in a protocol table — which is the worse place for it.
