@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>BedJetDaemon</string>
+	<key>CFBundleIdentifier</key>
+	<string>local.bedjet.daemon</string>
+	<key>CFBundleName</key>
+	<string>BedJet Daemon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>LSBackgroundOnly</key>
+	<true/>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
+	<!-- The entire reason this bundle exists. macOS attributes CoreBluetooth to
+	     the responsible app bundle, not to the Python binary; when neither
+	     carries this key TCC does not prompt and does not deny, it kills the
+	     process with SIGABRT and no traceback (RL-025). -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>BedJet Daemon connects to your BedJet over Bluetooth Low Energy to read its state and send the commands you ask it for.</string>
+</dict>
+</plist>
