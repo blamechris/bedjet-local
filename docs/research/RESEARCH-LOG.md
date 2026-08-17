@@ -1634,6 +1634,14 @@ to LaunchServices and exits, so launchd's job is already over: `runs = 1, last e
 while the daemon is alive with **PPID 1**, reparented and outside launchd's reach. Booting the
 job out therefore removes a record and signals nothing.
 
+> ⚠️ **Corrected by RL-031.** The daemon was never outside launchd's reach: LaunchServices
+> registers the launched bundle as its own launchd job
+> (`application.local.bedjet.daemon.<n>.<n>`), and `bootout` of *that* label delivers SIGTERM
+> and reaches the #12 handler. What this entry measured was a bootout of the LaunchAgent's
+> label — the wrong job. The trade-off framing in the next paragraph ("launchd cannot supervise
+> or stop it") does not hold; the reboot/logout consequence is narrowed to an open question.
+> See RL-031.
+
 This is the same trade-off RL-025 forced, showing up on the other side. The bundle must be the
 responsible process for Bluetooth, which means launchd must not be the daemon's parent, which
 means launchd cannot supervise or stop it. **The consequence is operational: a reboot or logout
@@ -1660,3 +1668,87 @@ rather than an inference. Medium for 1: reproduced once, cause unknown.
 **Next question:** does the login-time spawn actually happen, given that `bootstrap`'s did not?
 That still needs a logout, and it is now the *only* thing standing between this and an unattended
 daemon — the grant question it was meant to answer is settled.
+
+---
+
+## RL-031 — launchd can stop the daemon after all: the job is `application.*`, not the LaunchAgent label
+
+**Date:** 2026-08-17
+**Question:** RL-030 concluded that launchd has no process to signal, and #16 was filed on that
+conclusion. External evidence suggested otherwise: LaunchServices-launched apps are themselves
+registered as launchd jobs in the GUI domain, under labels of the form
+`application.<bundle-id>.<asn>.<asn>` managed by RunningBoard. If that holds for our bundle,
+RL-030's `bootout` targeted the wrong job — the LaunchAgent's, whose `open` had already exited —
+while the daemon's own job sat in the same domain, signalable all along. Does the real daemon get
+such a label, and does `launchctl bootout` of it reach the #12 handler?
+**Setup:** Bundle unchanged at the RL-027/RL-029 cdhash
+`4fb4763286c3adfe9ea1e1e59983f48a6460439b`. LaunchAgent **not** installed. Daemon started with
+`open -a ~/Applications/BedJetDaemon.app` — the same LaunchServices route as RL-029/RL-030.
+Read-only; no command sent; unit `off / standby` throughout. Host is macOS **26.5.2 (25F84)** —
+recorded exactly this time, since earlier entries never pinned the version — and had rebooted
+earlier the same day, so this is a fresh GUI session.
+**Observation:**
+
+**1. The grant held, again, and faster.** Connected on attempt 1 in ~2 s, no prompt, no SIGABRT,
+`GET /api/v1/state` serving (`link: connected, power: off, mode: standby`).
+
+**2. The daemon has an `application.*` job.** With the LaunchAgent uninstalled — so the
+`local.bedjet.daemon` label did not exist anywhere —
+
+```
+launchctl print gui/501 | grep -i bedjet
+    72124    -    application.local.bedjet.daemon.787189186.787189193
+```
+
+The job's process is the `uv run` PID (72124, PPID 1). PPID 1 because **launchd is the parent**,
+not because the daemon was orphaned. The trailing numbers are per-launch ASN components: the
+label must be discovered at stop time, never hardcoded.
+
+**3. `bootout` of that label is a working graceful stop.**
+
+```
+launchctl bootout gui/501/application.local.bedjet.daemon.787189186.787189193   → rc 0
+(within ~1 s)
+16:32:04  status reader stopped (208 packets, 207 split, 2 rejected, 0 skipped while busy)
+16:32:04  BLE link dropped / disconnected / link connected -> stopped
+          SIGTERM received — releasing the link.
+          Link released — the vendor app can connect again.
+```
+
+Both PIDs gone, port 8787 closed, device free.
+
+**Interpretation:** RL-030's "launchctl cannot stop it" was a **wrong-target result, not a
+capability gap**. Two launchd jobs are involved in a LaunchAgent start: the agent's own job,
+which runs `open` and finishes the moment it hands off — booting that out removes a bookkeeping
+record, which is exactly what RL-030 measured — and the application job LaunchServices registers
+for the launched bundle, which holds the live process. The second job was presumably present in
+every prior run — the launch route was identical — but no prior run observed it, and nothing
+ever aimed at it.
+
+Consequently the structural tension #16 stated — the bundle must be the responsible process
+*or* launchd must be the parent, pick one — is **false as stated**. LaunchServices registers the
+launched app as a launchd job, so the bundle keeps the TCC attribution *and* launchd holds a
+signalable handle. launchd signals the job's main process (`uv`), `uv` forwards (#14, RL-030),
+and the #12 handler releases the link: the verified chain now has a launchd-native trigger, with
+no code change and no re-signing.
+
+What this does **not** yet establish, in order of consequence: what a real GUI logout, shutdown,
+or reboot actually delivers to this job — per-job teardown behaving like `bootout` is the
+mechanism hypothesis, but Apple's archived loginwindow documentation predicts outright SIGKILL
+for background processes, and neither has been measured here; and what an ungraceful drop costs —
+whether the vendor app can connect after a SIGKILL'd link, which RL-024 makes plausible and
+nothing has tested. Those two measurements are what remain of #16.
+
+Incidental: **207 of 208 status packets arrived split** — the third same-shaped measurement
+(RL-026: 601/603; RL-030: 615/616), on a third day and link.
+
+**Confidence:** high — direct observation on the real daemon and device, with RL-030's direct
+SIGTERM as the matched positive control and RL-030's agent-label `bootout` as the matched
+negative.
+**Provenance:** ✅ VERIFIED (our host and our device)
+**Fixture:** —
+**Next question:** what does one real logout deliver to this job? A single attended
+logout+login answers that *and* #9's login-spawn question in the same run. Separately: does the
+vendor app connect after a SIGKILL-dropped link? That is the remaining evidence gap behind
+option 3 in #16, and it also covers the paths no signal mechanism can reach (power loss, panic,
+forced restart).
