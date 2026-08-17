@@ -57,7 +57,7 @@ Strictly sequential. Do not skip forward because an earlier step "obviously work
 | 9 | Decode state | no |
 | 10 | **Validate decoded state against a known state set in the vendor app** | no |
 | — | ⬆ **Milestone 1 ends here. Everything above is read-only.** | |
-| 11 | First write ever: **`01 01` — OFF**, via `bedjet off` | ✅ first write |
+| 11 | ✅ **DONE** — first write ever: **`01 01` — OFF**, via `bedjet off` (RL-019) | ✅ first write |
 | 12 | Fan-only mode at low speed | ✅ |
 | 13 | Fan speed changes | ✅ |
 | 14 | Cool mode | ✅ |

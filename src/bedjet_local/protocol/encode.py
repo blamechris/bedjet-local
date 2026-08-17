@@ -1,6 +1,14 @@
 """Command encoding. Pure: builds byte strings, sends nothing.
 
-⚠️ **Every command in this module is 📖 UPSTREAM and has never been sent to our device.**
+✅ **`01 01` (OFF) is VERIFIED on our device** (RL-019) — sent, and the unit switched off.
+
+That single result settles more than one command. It confirms that the command
+characteristic, the opcode/operand framing, and **the command mode enum itself** are all as
+upstream describes — which in turn confirms RL-014's finding from the other side: status and
+command really are two different, both-real enums, rather than one source simply being wrong.
+Command `0x01` is off; status `0x01` is heat. Both true.
+
+⚠️ **Every OTHER command here is still 📖 UPSTREAM and has never been sent.**
 That is a weaker footing than it sounds, for a specific reason established by RL-012/13/14:
 
 The same upstream sources that gave us these command values also implied a *status* mode

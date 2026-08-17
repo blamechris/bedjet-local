@@ -87,20 +87,28 @@ def test_only_the_commander_can_send() -> None:
     )
 
 
-def test_off_is_the_only_command_the_write_path_can_construct() -> None:
-    """Milestone 2 phase 1: OFF is verified first, alone.
+#: Commands the write path is allowed to construct, in the order they were unlocked. A
+#: command joins this list only once the previous one is VERIFIED on hardware — see
+#: docs/SAFETY.md's bring-up order. Widening it is a safety decision, made here in the open.
+UNLOCKED_COMMANDS = {
+    "turn_off",  # ✅ VERIFIED RL-019
+    "set_fan_percent",  # 📖 unverified — thermally inert, next in the bring-up order
+}
 
-    Every command byte is unverified upstream guesswork (RL-016), so they get verified one
-    at a time against observed state — starting with the one whose failure mode is a device
-    that keeps doing what it was already doing. Adding a second command here means the
-    first has been proven; do that in its own commit.
+
+def test_the_write_path_constructs_only_unlocked_commands() -> None:
+    """Commands are verified one at a time, in increasing order of consequence.
+
+    Every command byte started as unverified upstream guesswork (RL-016). Temperature and
+    heat are the consequential ones and stay locked until the inert ones have proven the
+    opcode framing.
     """
     source = (SRC / "service" / "commander.py").read_text()
-    forbidden = ["set_temperature", "set_fan", "set_timer", "set_mode(", "press("]
-    used = [name for name in forbidden if name in source]
+    locked = ["set_temperature", "set_timer", "set_mode(", "press("]
+    used = [name for name in locked if name in source]
     assert not used, (
-        f"commander.py can now construct {used}. Only turn_off() belongs here until OFF is "
-        f"verified on hardware and each further command is verified in turn."
+        f"commander.py can now construct {used}, which is not in UNLOCKED_COMMANDS. Verify "
+        f"the previous command on hardware first, then unlock this one deliberately."
     )
     assert "turn_off" in source
 

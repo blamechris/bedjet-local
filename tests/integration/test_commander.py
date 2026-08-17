@@ -54,7 +54,7 @@ async def test_off_refuses_when_the_unit_is_already_off() -> None:
     transport = MockTransport()
     commander = await _armed(transport, STANDBY)
 
-    with pytest.raises(CommandRefused, match="already in standby"):
+    with pytest.raises(CommandRefused, match="already satisfies"):
         await commander.send_off()
     assert transport.writes == [], "refused commands must not reach the device"
 
@@ -84,7 +84,7 @@ async def test_off_raises_unverified_when_the_device_ignores_it() -> None:
             transport.emit(STATUS_UUID, RUNNING)
 
     task = asyncio.create_task(keep_running())
-    with pytest.raises(CommandUnverified, match="did not report standby"):
+    with pytest.raises(CommandUnverified, match="did not satisfy"):
         await commander.send_off()
     await task
 
@@ -135,3 +135,51 @@ async def test_commander_sends_only_off() -> None:
     await task
 
     assert {payload for _, payload in transport.writes} == {bytes([0x01, 0x01])}
+
+
+# ── Command #2: fan speed (RL-019's next step) ──────────────────────────────────────────
+
+
+async def test_set_fan_writes_the_fan_opcode_and_verifies() -> None:
+    """Fan exercises opcode 0x07 — OFF only ever verified 0x01."""
+    transport = MockTransport()
+    commander = await _armed(transport, build_status(mode=StatusMode.COOL, fan_step=9))
+
+    async def respond() -> None:
+        await asyncio.sleep(0)
+        transport.emit(STATUS_UUID, build_status(mode=StatusMode.COOL, fan_step=19))
+
+    task = asyncio.create_task(respond())
+    result = await commander.set_fan_percent(100)
+    await task
+
+    assert transport.writes == [(COMMAND_UUID, bytes([0x07, 19]))]
+    assert result.after.fan_percent == 100
+
+
+async def test_set_fan_refuses_when_the_unit_is_off() -> None:
+    """RL-013: the fan byte holds its last-set value in standby, so a change is invisible."""
+    transport = MockTransport()
+    commander = await _armed(transport, STANDBY)
+
+    with pytest.raises(CommandRefused, match="not running"):
+        await commander.set_fan_percent(50)
+    assert transport.writes == []
+
+
+async def test_set_fan_refuses_when_already_at_that_speed() -> None:
+    transport = MockTransport()
+    commander = await _armed(transport, build_status(mode=StatusMode.COOL, fan_step=9))
+
+    with pytest.raises(CommandRefused, match="already satisfies"):
+        await commander.set_fan_percent(50)
+    assert transport.writes == []
+
+
+async def test_set_fan_is_unverified_when_the_device_ignores_it() -> None:
+    transport = MockTransport()
+    commander = await _armed(transport, build_status(mode=StatusMode.COOL, fan_step=9))
+
+    with pytest.raises(CommandUnverified, match="fan -> 100%"):
+        await commander.set_fan_percent(100)
+    assert transport.writes, "the write happened; only the effect is unconfirmed"

@@ -939,3 +939,60 @@ the next candidate is `01 00`, matching the status enum's standby value.
 corruption storm, no teardown tracebacks, and an honest `CommandUnverified` where the previous
 run produced a false "✅ verified". The failure was reported accurately, which is the only
 reason the real cause was findable.
+
+---
+
+## RL-019 — ✅ FIRST VERIFIED COMMAND: `01 01` turns the BedJet off
+
+**Date:** 2026-08-16
+**Question:** With the write type corrected (RL-018), does `01 01` actually turn the device
+off?
+**Setup:** Unit running Cool / fan 100 % / target 66 °F via the vendor app, app force-closed.
+`bedjet off`. The log now reports the write type explicitly:
+`WRITE … <- 01 01 (with response)`.
+**Observation:**
+
+```
+before: power=on   mode=cool     actual=22.5C  target=19.0C  fan=100%  remaining=9:55:23
+after:  power=off  mode=standby  actual=23.0C  target=19.0C  fan=100% (last set)
+```
+
+The unit switched off. Reader health: 66 packets, 3 split, **1 rejected**, 63 skipped while
+busy — no corruption storm, and the confirming packet passed its checksum.
+
+**Interpretation.** ✅ **`01 01` = OFF is VERIFIED on our hardware.** The first command this
+project has actually proven, and the first protocol claim we have promoted from upstream
+guesswork by *doing* it rather than by reading it.
+
+One result settles four things at once:
+
+1. The command characteristic (`…2004`) is right.
+2. The `[opcode, operand]` framing is right.
+3. The opcode `0x01` is right.
+4. **The command mode enum is real** — and that is the interesting one. RL-014 found that
+   status and command enums disagree on every value they share, which left open whether
+   upstream's command table was simply *wrong*. It is not. **Command `0x01` is off and status
+   `0x01` is heat: two genuinely different enums, both correct.** The finding is now confirmed
+   from both sides, and the remaining command values become decent bets rather than guesses —
+   though each still gets verified on its own.
+
+**And the last two failures were worth having.** RL-017's false "✅ verified" and RL-018's
+silently-dropped write were both cases of code reporting *what it did* rather than *what
+happened*. Fixing them is what makes this result mean anything: the same tool that now says
+"verified" said "unverified" twenty minutes ago on the same command, and was right both times.
+A verification system that has only ever passed is not evidence of anything.
+
+**Confidence:** high
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** —
+**Next question:** command #2, and the bring-up order (`SAFETY.md`) says the next-safest
+observable one. There is no fan-only mode in the status enum, so the natural step is
+**fan speed** (`07 <step>`): thermally inert, directly observable in status byte 10, and it
+exercises a **different opcode**, which OFF did not. Then Cool (`01 02`), then Heat last and
+attended.
+
+**Minor follow-on observed here:** 63 of 66 notifications were skipped while a follow-up read
+was in flight. Harmless — the device repeats constantly and we still verified in under a
+second — but it suggests the notification-plus-read dance is doing more work than needed. The
+status characteristic is directly readable, so polling a whole packet may be simpler and
+cheaper than reassembling one. Worth measuring, not urgent.

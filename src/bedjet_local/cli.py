@@ -351,6 +351,58 @@ async def cmd_off(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_fan(args: argparse.Namespace) -> int:
+    """⚠️ WRITES. Set fan speed and verify it took effect. Bring-up step 13.
+
+    Thermally inert and directly observable, and it exercises a different opcode from OFF —
+    which is the point of doing it second.
+    """
+    _check_ownership(args)
+    transport = BleakTransport()
+    await transport.connect(args.address, timeout=args.timeout)
+    commander = Commander(transport, settle_timeout=args.settle)
+
+    try:
+        await commander.start()
+        before, _ = await commander.wait_for_state(args.settle)
+        print(f"\ncurrent state: {before.describe()}")
+
+        if args.dry_run:
+            result = await commander.set_fan_percent(args.percent, dry_run=True)
+            print(f"\nDRY RUN — would write: {result.payload.hex(' ')}. Nothing was sent.")
+            return 0
+
+        if not args.yes:
+            payload = encode.set_fan_percent(args.percent)
+            print(
+                f"\n⚠️  This writes to the device. About to send: {payload.hex(' ')}  "
+                f"(fan -> {args.percent}%)"
+            )
+            print("    The unit must be running, and you should be able to hear the change.")
+            if input("\n    Type 'fan' to send, anything else to abort: ").strip() != "fan":
+                print("aborted — nothing was sent.")
+                return 1
+
+        result = await commander.set_fan_percent(args.percent)
+    except CommandRefused as exc:
+        print(f"\n⛔ refused, nothing sent: {exc}")
+        return 1
+    except CommandUnverified as exc:
+        print(f"\n❌ UNVERIFIED: {exc}")
+        return 2
+    finally:
+        await commander.stop()
+        await transport.disconnect()
+        print("\nLink released — the vendor app can connect again.")
+
+    print("\n✅ verified: the device did what we asked.")
+    print(f"    sent:   {result.payload.hex(' ')}")
+    print(f"    before: {result.before.describe()}")
+    print(f"    after:  {result.after.describe()}")
+    print("\nOpcode 0x07 is now VERIFIED. Record it in docs/research/RESEARCH-LOG.md.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bedjet",
@@ -433,6 +485,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_off.add_argument("--save", type=Path, help="write the post-command packet to file")
     p_off.set_defaults(func=cmd_off)
+
+    p_fan = sub.add_parser(
+        "fan", help="⚠️ WRITES TO THE DEVICE. Set fan speed and verify it (step 13)"
+    )
+    p_fan.add_argument("address")
+    p_fan.add_argument("percent", type=int, help="5-100, in 5%% steps")
+    p_fan.add_argument("--timeout", type=float, default=20.0)
+    p_fan.add_argument("--force", action="store_true", help=force_help)
+    p_fan.add_argument("--dry-run", action="store_true", help="rehearse without writing")
+    p_fan.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p_fan.add_argument("--settle", type=float, default=10.0, metavar="S")
+    p_fan.set_defaults(func=cmd_fan)
 
     return parser
 

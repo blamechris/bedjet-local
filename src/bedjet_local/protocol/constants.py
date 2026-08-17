@@ -148,12 +148,20 @@ STATUS_MODE_PREDICTION: Final = {
 
 
 class CommandMode(IntEnum):
-    """Mode operand of the ``0x01`` **command**. 📖 UPSTREAM, never yet sent by us.
+    """Mode operand of the ``0x01`` **command**.
+
+    ✅ ``OFF`` is VERIFIED (RL-019): sent to our device, and the unit switched off.
+
+    That one result settles the framing, the characteristic, the opcode, **and the fact that
+    this enum is real**. Which confirms RL-014 from the other side: command `0x01` is off and
+    status `0x01` is heat — two genuinely different enums, both correct, rather than one
+    source being wrong. The remaining values are 📖 UPSTREAM and now decent bets rather than
+    guesses, but each is verified on its own before being trusted.
 
     Do not use these to decode status — see :class:`StatusMode`.
     """
 
-    OFF = 0x01
+    OFF = 0x01  # ✅ VERIFIED 2026-08-16 (RL-019)
     COOL = 0x02
     HEAT = 0x03
     TURBO = 0x04

@@ -218,9 +218,17 @@ same characteristic. ✅ VERIFIED — 55 notifications in ~60 s, each reassembli
 
 ## Commands — characteristic `…2004`, write
 
+> ⚠️ **Write type matters.** The command characteristic declares `[write]` only — which in
+> BLE means **write-with-response**. `write-without-response` is a separate property it does
+> not have, and CoreBluetooth **silently discards** a without-response write to such a
+> characteristic: no error, nothing on the wire. Every command sent before RL-018 was thrown
+> away by the local Bluetooth stack. The transport now picks the write type from the
+> characteristic's declared properties.
+
 | Bytes | Command | Provenance | Confidence |
 |---|---|---|---|
-| `01 <mode>` | Set mode / button | 📖 MQTT bridge | medium |
+| **`01 01`** | **Off** | ✅ **VERIFIED 2026-08-16 (RL-019)** — sent; the unit switched off | high |
+| `01 <mode>` | Set mode / button | 📖 MQTT bridge; the `01` opcode and the framing are now verified | medium |
 | `02 <hh> <mm>` | Set timer | 📖 MQTT bridge | medium |
 | `03 <temp>` | Set target temperature (`2 × °C`) | 📖 MQTT bridge | medium |
 | `07 <step>` | Set fan speed (step index) | 📖 MQTT bridge | medium |
@@ -240,9 +248,13 @@ same characteristic. ✅ VERIFIED — 55 notifications in ~60 s, each reassembli
 | `0x12` / `0x13` | Temp up / temp down | 📖 |
 | `0x20` / `0x21` / `0x22` | Preset M1 / M2 / M3 | 📖 |
 
-⚠️ Every command in this section is **unwritten and untested**. Per
-[`SAFETY.md`](../SAFETY.md), the first command we ever send is `01 01` (off), and no command
-is sent at all until state decoding has been validated against the physical unit.
+✅ `01 01` (off) is **verified**. Everything else in this section remains **untested**, and
+is sent only one command at a time with the result verified against observed state — see
+[`SAFETY.md`](../SAFETY.md).
+
+The mode operands above are the **command** enum. They are not the status enum, and the two
+disagree on every value they share (see the status-mode table). Command `0x01` is off; status
+`0x01` is heat. Both are now confirmed.
 
 ## Temperature encoding — the resolved contradiction
 
