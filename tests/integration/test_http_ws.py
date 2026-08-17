@@ -20,6 +20,8 @@ from bedjet_local.integrations.http_ws import (
     ConfigurationRefused,
     ServerConfig,
     build_app,
+    host_is_permitted,
+    hostname_of,
 )
 from bedjet_local.protocol.constants import COMMAND_UUID, STATUS_UUID, StatusMode
 from bedjet_local.service.session import DeviceSession
@@ -111,6 +113,31 @@ async def test_a_request_carrying_an_origin_is_refused() -> None:
     finally:
         await client.close()
         await session.stop()
+
+
+def test_an_ip_literal_host_is_accepted_including_the_lan_case() -> None:
+    """The bug this covers: bound to 0.0.0.0 with a token, a LAN client sends the server's
+    own address in Host — and rejecting it would break the exact deployment ADR-0004
+    supports. An IP literal cannot be a rebinding target: rebinding needs a *name*."""
+    config = ServerConfig(host="0.0.0.0", token=TOKEN)
+    assert host_is_permitted("192.168.1.50:8787", config) is True
+    assert host_is_permitted("[fe80::1]:8787", config) is True
+    assert host_is_permitted("attacker.invalid:8787", config) is False
+
+
+def test_a_named_host_passes_only_when_it_was_allowed() -> None:
+    config = ServerConfig(host="0.0.0.0", token=TOKEN, allowed_hosts=frozenset({"pi.local"}))
+    assert host_is_permitted("pi.local:8787", config) is True
+    assert host_is_permitted("PI.LOCAL", config) is True, "hostnames are case-insensitive"
+    assert host_is_permitted("evil.invalid", config) is False
+
+
+def test_ipv6_host_headers_survive_the_port_split() -> None:
+    """``split(":")[0]`` turns ``[::1]:8787`` into ``[`` and would reject loopback itself."""
+    assert hostname_of("[::1]:8787") == "::1"
+    assert hostname_of("::1") == "::1"
+    assert hostname_of("localhost:8787") == "localhost"
+    assert hostname_of("localhost") == "localhost"
 
 
 async def test_an_unrecognised_host_header_is_refused() -> None:

@@ -113,6 +113,26 @@ async def test_yield_releases_the_link_and_blocks_reconnection() -> None:
         await session.stop()
 
 
+async def test_a_yield_during_a_reconnect_still_ends_with_the_link_released() -> None:
+    """A drop and a yield seconds apart is an ordinary evening, and a yield that loses that
+    race is a yield that did not happen — the owner asks for their heater back and the
+    daemon quietly keeps it."""
+    transport = MockTransport()
+    session = await _started(transport, backoff_initial=0.01, backoff_max=0.01)
+    try:
+        transport.drop()
+        # Yield without waiting for the supervisor to settle, so the request lands while a
+        # reconnect is plausibly in flight.
+        await session.yield_link(60.0)
+
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            assert session.link is LinkState.YIELDED
+            assert transport.is_connected is False, "a yielded link must not be reclaimed"
+    finally:
+        await session.stop()
+
+
 async def test_a_yield_expires_and_the_link_comes_back() -> None:
     transport = MockTransport()
     session = await _started(transport)
