@@ -73,12 +73,18 @@ transport/  BLE discovery, connection lifecycle, GATT ops     (bleak lives here,
 protocol/   packet definitions, encode, decode, constants     (pure; no I/O, no async)
 device/     BedJetDevice state model, commands, capabilities  (safety clamps live here)
 service/    lifecycle, retries, reconnection, connection lease
-api/        stable local interface                            (Milestone 3)
-integrations/ Jarvis, MQTT, Home Assistant                    (Milestone 3+)
+api/        stable local interface                            (strings out; the translation seam)
+integrations/ HTTP+WS, MQTT, Home Assistant, Jarvis           (adapters, peers of one another)
 ```
 
 Dependencies point downward only. An adapter that needs to know a byte offset means the
 abstraction has leaked — fix the abstraction, not the adapter.
+
+**`integrations/` may import `api/` and nothing else in this package.** Not `protocol/`, not
+`device/`, not `service/`, not `transport/`. "No protocol knowledge in an adapter" is easy to
+agree with and easy to violate with one convenient import that breaks nothing, so
+`tests/unit/test_layering.py` checks it. If an adapter needs a field the API does not expose,
+add it to `api/` — that is the prescribed fix, not a shortcut around it.
 
 ## Fleet conventions
 
