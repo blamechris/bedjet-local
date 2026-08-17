@@ -61,14 +61,33 @@ def test_device_layer_does_not_import_transport() -> None:
         assert "transport" not in source, f"{path.name} references the transport layer"
 
 
-def test_milestone_1_ships_no_command_encoder() -> None:
-    """Milestone 1 is read-only by construction (docs/SAFETY.md).
+def test_no_code_path_sends_a_command() -> None:
+    """The encoder exists; **nothing wires it to a transport.**
 
-    When Milestone 2 begins, this test is deleted in the same commit that adds
-    ``protocol/encode.py`` — deliberately, with the safety review that implies, rather
-    than by an encoder quietly appearing.
+    This replaces the earlier "no encoder may exist" guard, which was deleted deliberately
+    when the encoder landed. The invariant that actually matters was never the file's
+    absence — it was that no code path can put bytes on the wire. That is what is asserted
+    here, and it is a stronger statement than the one it replaces.
+
+    Encoding is pure and safe: it builds byte strings. *Sending* is the physical act, and
+    the first one is a deliberate, attended event (docs/SAFETY.md), not something that
+    happens because a call site appeared.
     """
-    assert not (SRC / "protocol" / "encode.py").exists(), (
-        "A command encoder has appeared. If Milestone 2 has started, delete this test "
-        "explicitly and read docs/SAFETY.md first."
+    senders = []
+    for path in SRC.rglob("*.py"):
+        if path.parent.name == "transport":
+            continue  # transport defines write(); that is its job
+        source = path.read_text()
+        if ".write(" in source or "write_gatt_char" in source:
+            senders.append(str(path.relative_to(SRC)))
+    assert not senders, (
+        f"a call to transport write appeared in {senders}. Milestone 2's first write is an "
+        f"attended event with a human present — read docs/SAFETY.md before wiring this up."
     )
+
+
+def test_encoder_is_pure() -> None:
+    """The encoder must not acquire I/O along with its purpose."""
+    forbidden = {"asyncio", "bleak", "socket"}
+    leaked = forbidden & {n.split(".")[0] for n in _imports(SRC / "protocol" / "encode.py")}
+    assert not leaked, f"encode.py imports {leaked}"

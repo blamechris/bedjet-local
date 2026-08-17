@@ -686,3 +686,109 @@ session unreadable and forced the operator to hold Ctrl-C. Anomalies are now log
 the set changes, and the split-packet notice is logged once then dropped to debug. Combined
 with `watch`'s repeat collapsing and `--packets N`, a capture is now a short, readable run
 that ends on its own.
+
+---
+
+## RL-015 — Dry is `0x05`: the prediction held, and dry reports an impossible target
+
+**Date:** 2026-08-16
+**Question:** RL-014 predicted, from the ordering `standby, heat, turbo, extended-heat,
+cool, dry`, that dry would be `0x05`. Does it hold?
+**Setup:** Dry set in the vendor app, app force-closed, `bedjet watch --packets 3 --save`.
+**Observation:**
+
+```
+01 56 1b 01 09 3b 21 39 2c 05 13 0c 00 30 3e 00 00 2c 00 12 01 9a 01 10 ff 00 15 34 00 00 ff
+                     ^^ mode 0x05  ^^ ^^ range 24.0-31.0C
+```
+
+Mode **`0x05`** — as predicted. Fan 100 %, remaining 9:59:33 of a 12:00 maximum, actual
+28.5 °C, checksum valid.
+
+**Interpretation: the prediction was correct.** The status-mode ordering is
+`standby(0), heat(1), turbo(2), ?(3), cool(4), dry(5)`, and the verified table is now five
+values deep with a single gap.
+
+`0x03` is *still* not added to `StatusMode`. One correct prediction raises the odds; it does
+not convert a guess into an observation, and the gap is the one value we would most want to be
+sure about (extended heat, on a heater). It stays in `STATUS_MODE_PREDICTION` until captured.
+The test enforcing this now says exactly that.
+
+**But dry reports a target below its own minimum.** Permitted range `24.0–31.0 °C`, target
+`22.0 °C`. Every other mode's target sits inside its range:
+
+| Mode | Range | Target | Inside? |
+|---|---|---|---|
+| heat | 22.5–40.0 | 31.5 | ✓ |
+| cool | 19.0–26.0 | 24.0 | ✓ |
+| turbo | 43.0–43.0 | 43.0 | ✓ |
+| **dry** | **24.0–31.0** | **22.0** | **✗** |
+
+Two hypotheses, neither tested:
+
+1. **Dry does not use a target.** Dehumidifying has no setpoint in the usual sense, so the
+   byte may simply be stale or meaningless in this mode.
+2. **The target tracks ambient in dry.** In this packet `target == ambient == 22.0 °C`
+   exactly. That is either a real relationship or a coincidence, and one packet cannot tell
+   the difference.
+
+A second dry capture at a different room temperature separates them cleanly: if the target
+follows ambient, hypothesis 2; if it stays at 22.0 °C, hypothesis 1.
+
+**The decoder flagged this correctly and the anomaly is asserted rather than suppressed.** It
+is the first time the anomaly machinery has caught something real about the device rather than
+about our own assumptions, and the test that pins it explains why the packet is "unclean" on
+purpose.
+**Confidence:** high for `0x05` = dry; the target anomaly is unexplained
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** `tests/fixtures/dry_fan100.bin`
+**Next question:** a second dry capture at a different ambient temperature, to separate the
+two hypotheses. Low priority — it does not block anything.
+
+---
+
+## RL-016 — Command encoder built; nothing can send it
+
+**Date:** 2026-08-16
+**Question:** What does Milestone 2 need before the first write, and what does the protocol
+work so far tell us about how much to trust the command table?
+**Setup:** No hardware. `protocol/encode.py` written as a pure module.
+**Interpretation — the reason this needs saying out loud:**
+
+**The command table is on weaker ground than it looks.** It comes from the same upstream
+sources that also implied a status-mode enum — and that implication was *wrong* in a
+particularly bad way (RL-012/13/14): the two enums are offset, so every overlapping value
+decodes as another real mode rather than as nonsense. Cooling read as turbo, turbo as heat,
+heating as cool.
+
+That does not make the command values wrong; they were presumably derived from watching the
+vendor app's writes, which is decent evidence. It does mean **the source has demonstrably
+conflated two tables once already**, and we have zero independent verification of any command
+byte. So Milestone 2's rule is: **every command is verified by reading the status back.** A
+write that does not produce an observable state change has not succeeded, it has merely not
+errored.
+
+Design consequences already applied:
+
+- `set_temperature` **requires** the device-reported bounds (`min_temp_c`/`max_temp_c` from the
+  current status packet) and refuses without them. RL-013 showed the range moves with the mode
+  and that turbo's 43 °C exceeds the "documented" 104 °F maximum, so a hardcoded table would be
+  both wrong and unsafe.
+- `set_timer` likewise takes the device-reported `max_runtime_s` — turbo's is 10 minutes.
+- Out-of-range values **raise rather than clamp**. Silently heating to a different temperature
+  than the caller asked for is the wrong failure mode for a heater.
+- `set_mode` rejects a `StatusMode` by type. Passing one would select a plausible, wrong mode
+  with no symptom.
+
+**Nothing can send any of this.** The old "no encoder may exist" guard was deleted deliberately
+along with this change, and replaced by a stronger one: `test_no_code_path_sends_a_command`
+asserts that **no module outside `transport/` calls a write at all**. The invariant that
+mattered was never the file's absence — it was that no code path can put bytes on the wire.
+The first write remains a deliberate, attended event.
+**Confidence:** the design is sound; the byte values are unverified
+**Provenance:** 📖 UPSTREAM for every command byte
+**Fixture:** —
+**Next question:** the first write: `01 01` (off), with a human present, the unit visible, and
+status read back immediately to confirm the mode became `0x00` standby. That single exchange
+verifies the opcode, the operand, the characteristic, and the write path all at once — and off
+is the one command whose failure mode is a device that stays on.

@@ -163,8 +163,9 @@ notification mis-joined to its follow-up read would not sum to zero.
 |---|---|---|
 | standby `0x00` | 0:00 | 10.0–40.0 °C (50–104 °F) |
 | heat `0x01` | 12:00 | 22.5–40.0 °C (72.5–104.0 °F) |
-| cool `0x04` | 12:00 | 19.0–26.0 °C (66.2–78.8 °F) |
 | turbo `0x02` | **0:10** | fixed **43.0 °C (109.4 °F)** |
+| cool `0x04` | 12:00 | 19.0–26.0 °C (66.2–78.8 °F) |
+| dry `0x05` | 12:00 | 24.0–31.0 °C — ⚠️ but reports a target of 22.0 °C, *below* its own minimum (RL-015) |
 
 ⚠️ **Turbo targets 109.4 °F — above the 104 °F that upstream and the manufacturer's marketing
 both call the maximum.** A hardcoded ceiling therefore flags a perfectly healthy turbo packet
@@ -191,8 +192,8 @@ byte uses a different enum. It does.
 | `0x01` | **Heat** | *cool* | ✅ VERIFIED |
 | `0x02` | **Turbo** | *heat* | ✅ VERIFIED |
 | `0x04` | **Cool** | *turbo* | ✅ VERIFIED |
-| `0x03` | extended heat — **predicted, unverified** | *heat* | ❓ |
-| `0x05` | dry — **predicted, unverified** | *dry* | ❓ |
+| `0x05` | **Dry** | *dry* | ✅ VERIFIED — **predicted first, then confirmed** |
+| `0x03` | extended heat — **predicted, never observed** | *heat* | ❓ |
 
 **The two enums are offset from each other, and every overlap is wrong in a plausible way.**
 A status packet decoded with the command table does not produce nonsense — it produces *another

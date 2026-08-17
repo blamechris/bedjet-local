@@ -136,7 +136,14 @@ ALL_FIXTURES = [
     "off_standby.bin",
     "off_after_heating.bin",
     "turbo_fan100_target109f.bin",
+    "heat_fan100_target89f.bin",
+    "dry_fan100.bin",
 ]
+
+#: dry_fan100 legitimately carries an anomaly — the device reports a target below its own
+#: stated minimum for that mode (RL-015). Listed here rather than silenced, so the anomaly
+#: stays visible and has to be justified.
+FIXTURES_WITH_EXPECTED_ANOMALIES = {"dry_fan100.bin"}
 
 
 @pytest.mark.parametrize("name", ALL_FIXTURES)
@@ -150,7 +157,7 @@ def test_every_real_packet_passes_its_checksum(name: str) -> None:
     assert packet.checksum_ok is True, f"{name} failed its checksum"
 
 
-@pytest.mark.parametrize("name", ALL_FIXTURES)
+@pytest.mark.parametrize("name", sorted(set(ALL_FIXTURES) - FIXTURES_WITH_EXPECTED_ANOMALIES))
 def test_every_real_packet_decodes_clean(name: str) -> None:
     packet = decode_status((FIXTURES / name).read_bytes())
     assert packet.anomalies == (), f"{name}: {packet.anomalies}"
@@ -266,11 +273,52 @@ def test_heat_has_its_own_permitted_range(heat: bytes) -> None:
 
 
 def test_predicted_modes_are_not_decoded() -> None:
-    """RL-014's prediction (0x03 extended heat, 0x05 dry) must stay a prediction.
+    """A prediction must stay a prediction until a capture confirms it.
 
-    Four verified values fit an ordering that implies the rest. Acting on that pattern is
-    precisely the move this project exists to avoid — a guess that decodes silently is
-    indistinguishable from a fact.
+    RL-014 predicted 0x03 = extended heat and 0x05 = dry. RL-015 captured dry and confirmed
+    0x05, so DRY is now a verified member. 0x03 has still never been observed and must not
+    be decoded — a guess that decodes silently is indistinguishable from a fact, and one
+    correct prediction does not license the next.
     """
-    for predicted in (0x03, 0x05):
-        assert predicted not in {m.value for m in StatusMode}
+    assert 0x05 in {m.value for m in StatusMode}, "dry was confirmed by capture"
+    assert 0x03 not in {m.value for m in StatusMode}, "extended heat is still only predicted"
+
+
+# ── Dry (RL-015) ────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def dry() -> bytes:
+    """Ground truth: Dry, fan 100%, timer running — vendor app, 2026-08-16."""
+    return (FIXTURES / "dry_fan100.bin").read_bytes()
+
+
+def test_dry_mode_is_five_as_predicted(dry: bytes) -> None:
+    """RL-015. The ordering hypothesis predicted 0x05 before this capture existed, and the
+    capture confirmed it. A prediction that survives a real test is worth recording as such."""
+    packet = decode_status(dry)
+    assert packet.mode_raw == 0x05
+    assert packet.mode is StatusMode.DRY
+    assert BedJetState.from_status(packet).power is Power.ON
+
+
+def test_dry_reports_a_target_below_its_own_minimum(dry: bytes) -> None:
+    """RL-015, an unexplained one.
+
+    Dry reports a permitted range of 24.0-31.0 C and a target of 22.0 C — *below* its own
+    stated minimum. Every other mode's target sits inside its range. The target also happens
+    to equal the ambient reading in the same packet, which may or may not be a coincidence.
+
+    The anomaly is asserted rather than suppressed: the decoder is right to complain, and
+    the complaint is the finding.
+    """
+    packet = decode_status(dry)
+    assert packet.target_temp_c == 22.0
+    assert (packet.min_temp_c, packet.max_temp_c) == (24.0, 31.0)
+    assert packet.ambient_temp_c == packet.target_temp_c
+    assert any("outside the range the device reports" in a for a in packet.anomalies)
+
+
+def test_extended_heat_remains_unverified() -> None:
+    """0x03 has never been observed. One correct prediction does not license a second."""
+    assert 0x03 not in {m.value for m in StatusMode}

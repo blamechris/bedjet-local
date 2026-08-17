@@ -129,6 +129,23 @@ The retry of the capture that produced `off_after_heating.bin`. The difference w
 confirming the timer was running before releasing the link — a stopped unit reports standby
 no matter what mode is selected in the app.
 
+### `dry_fan100.bin`
+
+| | |
+|---|---|
+| **Captured** | 2026-08-16 |
+| **Device state** | **Dry**, fan 100 %, timer running (9:59:33 of 12:00) |
+| **Bytes** | `01 56 1b 01 09 3b 21 39 2c 05 13 0c 00 30 3e 00 00 2c 00 12 01 9a 01 10 ff 00 15 34 00 00 ff` |
+| **Expected** | mode `0x05` dry · actual 28.5 °C · permitted range 24.0–31.0 °C · **target 22.0 °C, below its own minimum** |
+
+⚠️ **This fixture legitimately decodes with an anomaly**, and the anomaly is asserted rather
+than suppressed. Dry reports a target outside the range it simultaneously reports as
+permitted, which no other mode does. The target also equals the ambient reading in the same
+packet — possibly meaningful, possibly coincidence. See RL-015.
+
+Also the fixture that confirmed a prediction: `0x05` was predicted from the mode ordering
+*before* this capture existed.
+
 ---
 
 ## Checksum
