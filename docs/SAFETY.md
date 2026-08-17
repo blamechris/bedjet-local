@@ -33,7 +33,9 @@ is sent:
    expect and why.
 3. **A justification** — what question it answers that reading cannot.
 4. **A reversal** — the exact command that restores the prior state, known and ready.
-5. **A human present**, with the physical remote in reach and the unit visible.
+5. **A human present**, in the room, with the unit visible and **the plug located**. (This
+   said "with the physical remote in reach" until RL-011 — there is no working remote, so the
+   plug is the escape hatch that always works.)
 
 "I'll just try it and see" is the failure mode this section exists to prevent. Reading is free;
 writing is not.
@@ -89,14 +91,25 @@ because an unobservable write teaches us nothing while still being a write to a 
 
 ## Operating limits
 
-Use the manufacturer's own limits as hard bounds in software:
+**The device is the authority on its own limits — not a spec sheet, and not us.**
 
-- Target temperature clamped to the device's documented range (≈66–104 °F / 19–40 °C), and the
-  clamp is enforced in `device/`, above the protocol layer, so no adapter can route around it.
-- Never send a target above what the vendor app itself permits.
-- Runtime/timer values stay within the device's documented maxima.
-- If the device reports a value outside its own documented range, **surface it as an anomaly**;
+This section used to say "clamp to the documented range (≈66–104 °F / 19–40 °C)". RL-013
+proved that wrong in both directions: the permitted range **moves with the mode** (standby
+10–40 °C, cool 19–26 °C, heat 22.5–40 °C, dry 24–31 °C), and **turbo targets 43 °C / 109.4 °F —
+above the 104 °F the manufacturer's own marketing calls the maximum.** A hardcoded table would
+have refused a temperature the device itself offers, and would have been the wrong shape of
+wrong: confidently applying a safety limit derived from a document rather than from the device.
+
+So:
+
+- Bounds come from the **current status packet** (bytes 13–14 for temperature, 11–12 for
+  runtime). `encode.set_temperature` and `encode.set_timer` **require** them and refuse without.
+- Out-of-range requests **raise, never clamp**. Silently heating to a different temperature
+  than the caller asked for is the wrong failure mode for a heater.
+- Never send a target the device does not currently report as permitted.
+- If the device reports a value outside its own stated range, **surface it as an anomaly**;
   never silently clamp a *decode*. Clamping inputs is safety; clamping observations is lying.
+  (Dry does exactly this — see RL-015 — and the anomaly is left visible rather than tidied away.)
 
 ## Physical-safety escape hatches
 
