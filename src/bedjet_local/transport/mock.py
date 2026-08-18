@@ -6,6 +6,7 @@ reassembly, and reconnection without any hardware — AGENTS.md rule 4.
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 
 from .base import DiscoveredDevice, NotifyCallback, TransportError
@@ -33,6 +34,7 @@ class MockTransport:
         self._connected = False
         self._subs: dict[str, list[NotifyCallback]] = defaultdict(list)
         self._write_error: TransportError | None = None
+        self._adapter_power_on = asyncio.Event()
 
     @property
     def is_connected(self) -> bool:
@@ -79,6 +81,9 @@ class MockTransport:
         self._require()
         return {}
 
+    def adapter_power_on_event(self) -> asyncio.Event:
+        return self._adapter_power_on
+
     # ── test driving ────────────────────────────────────────────────────────────────────
 
     def emit(self, characteristic: str, data: bytes) -> None:
@@ -99,6 +104,14 @@ class MockTransport:
         recording it in ``writes`` is deliberate — the test, like the caller, must not get
         to know."""
         self._write_error = TransportError(message)
+
+    def power_on_adapter(self) -> None:
+        """Simulate the host adapter turning (back) on, as a power cycle or a wake would.
+
+        Note this only fires the event — whether connecting *works* is still governed by
+        ``refuse_next_connects``, because a powered adapter says nothing about whether the
+        device is reachable."""
+        self._adapter_power_on.set()
 
     def refuse_next_connects(self, count: int) -> None:
         """Make the next ``count`` connection attempts fail.

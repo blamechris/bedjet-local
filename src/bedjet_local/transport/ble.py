@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib
 import logging
 from collections.abc import Iterator
 
@@ -118,6 +119,8 @@ class BleakTransport:
         # tail fragment was mistaken for a whole packet in RL-017. Serialise here, at the
         # layer that owns the backend, so no caller has to know.
         self._gatt = asyncio.Lock()
+        self._adapter_power_on: asyncio.Event | None = None
+        self._adapter_watcher: asyncio.Task[None] | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -313,3 +316,59 @@ class BleakTransport:
                     (char.uuid, tuple(char.properties)) for char in service.characteristics
                 ]
         return layout
+
+    def adapter_power_on_event(self) -> asyncio.Event:
+        """See :meth:`~bedjet_local.transport.base.Transport.adapter_power_on_event`.
+
+        The watcher starts on first call and runs for the life of the process — it must
+        outlive :meth:`disconnect`, because watching the adapter while the link is *down*
+        is its entire purpose. ``asyncio.run`` cancels it with everything else at loop
+        shutdown, and it holds nothing that needs more of a goodbye than that.
+        """
+        if self._adapter_power_on is None:
+            self._adapter_power_on = asyncio.Event()
+            self._adapter_watcher = asyncio.create_task(
+                self._watch_adapter(self._adapter_power_on), name="bedjet-adapter-watch"
+            )
+        return self._adapter_power_on
+
+    @staticmethod
+    async def _watch_adapter(powered_on: asyncio.Event) -> None:
+        """Set ``powered_on`` on every adapter off→on transition, forever.
+
+        CoreBluetooth reports central-manager state changes to every ``CBCentralManager``,
+        so one is created purely to listen — via bleak's ``CentralManagerDelegate``, whose
+        ``did_update_state_event`` pulses on each change. Both it and the state constant
+        are platform internals reached through ``importlib``: pyobjc exists only on macOS,
+        and a static import would fail type-checking and collection everywhere else. Where
+        the imports (or the manager) are unavailable, the event never fires and every
+        backoff runs to completion — precisely the pre-#20 behavior, degraded to rather
+        than crashed into.
+        """
+        try:
+            delegate_mod = importlib.import_module(
+                "bleak.backends.corebluetooth.CentralManagerDelegate"
+            )
+            cb = importlib.import_module("CoreBluetooth")
+            manager = delegate_mod.CentralManagerDelegate()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.info(
+                "adapter state is not observable here (%s: %s); reconnect backoff will "
+                "always run to completion",
+                type(exc).__name__,
+                exc,
+            )
+            return
+        # The first report is the *current* state, not a transition; it seeds the baseline
+        # so a daemon started with the adapter already on does not fire a phantom edge.
+        was_on: bool | None = None
+        while True:
+            await manager.did_update_state_event.wait()
+            manager.did_update_state_event.clear()
+            is_on = bool(manager.central_manager.state() == cb.CBManagerStatePoweredOn)
+            if is_on and was_on is False:
+                log.info("the Bluetooth adapter powered on")
+                powered_on.set()
+            was_on = is_on

@@ -372,17 +372,40 @@ class DeviceSession:
             # Tear down before reconnecting. A stale subscription against a dead client
             # leaves the backend issuing reads that can never complete.
             await self._teardown()
+            # Armed before the attempt, waited on after it fails: a power-on that lands
+            # while the attempt is in flight stays set (the event is sticky) and cuts the
+            # following backoff short instead of falling into the gap between the two.
+            power_on = self._transport.adapter_power_on_event()
+            power_on.clear()
             try:
                 await self._connect()
             except (TransportError, OSError) as exc:
                 log.warning("reconnect failed (%s); retrying in %.0fs", exc, backoff)
-                await asyncio.sleep(backoff)
+                await self._backoff_or_power_on(backoff, power_on)
                 backoff = min(backoff * 2, self._backoff_max)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("unexpected error reconnecting; retrying in %.0fs", backoff)
-                await asyncio.sleep(backoff)
+                await self._backoff_or_power_on(backoff, power_on)
                 backoff = min(backoff * 2, self._backoff_max)
             else:
                 backoff = self._backoff_initial
+
+    @staticmethod
+    async def _backoff_or_power_on(backoff: float, power_on: asyncio.Event) -> None:
+        """Wait out ``backoff``, unless the adapter powers on first.
+
+        RL-024 item 4: the adapter came back 22 s before a mid-backoff daemon noticed,
+        because recovery latency was bounded by the backoff interval rather than by device
+        availability (#20). An adapter power-on is the one signal that says "the reason
+        you were backing off may just have gone away", so it is the one thing allowed to
+        cut the sleep short. Each power-on buys at most one early attempt — the event is
+        re-armed before every try — so a flapping adapter cannot turn this into a hot
+        loop, and the backoff keeps growing across failures regardless.
+        """
+        try:
+            await asyncio.wait_for(power_on.wait(), timeout=backoff)
+        except TimeoutError:
+            return
+        log.info("the adapter powered on; cutting the %.0fs backoff short", backoff)
