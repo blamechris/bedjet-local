@@ -1850,3 +1850,98 @@ observed-once-unreproduced, with the stale-GUI-session hypothesis on record (n =
 **Next question:** none blocking. Optional, if ever convenient: a pure logout without restart;
 and #9 item 4's TCC half (does an identical-cdhash rebuild keep the grant) before any rebuild
 precedes an unattended start.
+
+---
+
+## RL-034 — A cold read serves the pinned remainder window: polling can never see a packet start
+
+**Date:** 2026-08-17
+**Question:** #2's open question, instrumented by PR #22: what does a **cold** GATT read of the
+status characteristic return when no notification is pending? ❓ HYPOTHESIS on record: a whole
+31-byte packet, which would make polling viable and delete the reassembly path.
+**Setup:** Attended, unit **on** in cool mode (hardware-verified `01 02` en route — already
+✅ VERIFIED since RL-021; fan 100 %, target 22.0 °C, remaining counting down from 10:00:00).
+Two poll-mode runs, no subscription, pure sequential reads: `watch --poll 1 --seconds 300`,
+then a 20 s re-run under `--debug` to capture the raw bytes of every read.
+**Observation:**
+
+```
+284 polls: 0 whole, 0 partial, 284 alien, 0 rejected, 0 failed reads; read rtt min/mean/max 46/57/125 ms
+ 19 polls: 0 whole, 0 partial,  19 alien, 0 rejected, 0 failed reads; read rtt min/mean/max 46/54/87 ms
+```
+
+Every one of the 19 debug-captured reads was the same 11-byte window — ten static bytes and a
+final byte ticking ≈ +1/s (with the repeats and skips of sampling a 1 Hz value at 1 Hz):
+
+```
+01 9a 01 10 ff 00 15 34 00 00 45   ← first read, 23:12:48
+01 9a 01 10 ff 00 15 34 00 00 46 46 48 48 4a 4a 4b 4d 4f 50 51 51 53 53 55 56 57 58
+                                   ← final byte of each subsequent read, one per second
+```
+
+The cross-check that settles it: fixture `cool_fan50_target75f.bin` (RL-002 — captured two days
+earlier under **different** fan and target settings) ends `01 9a 01 10 ff 00 15 34 00 00 31`.
+Bytes [20:30) of the packet are **byte-identical** to tonight's reads; only the final byte — the
+checksum position (packets sum to 0x00) — differs.
+
+**Interpretation:** A read of `…2000` returns **bytes [20:31) of the current status packet** —
+always. 11 = 31 − 20, the exact slice a 20-byte notification leaves behind. RL-012's "the
+firmware serves reads through some cursor" was too generous: there is no cursor. Notify carries
+[0:20), the read handler serves [20:31) **by design**, pinned — 303 consecutive cold reads never
+moved it. The window is live, not stale (the checksum byte tracks the head's 1 Hz countdown),
+but it can never contain the offset-1 format magic `0x56`, so a read can never begin a packet.
+**The hypothesis is disproven — polling for whole packets is impossible on this firmware.**
+Transport was never the problem: 0 failed reads, RTT 46–125 ms. Per PR #22's pre-agreed decision
+rule this is the stop signal: #2 closes as disproven, notify + follow-up read remains the status
+path, and #6 does not dissolve — it needs a targeted fix of its own.
+**Confidence:** high — 303 consistent reads across two runs, plus the fixture cross-match.
+**Provenance:** ✅ VERIFIED (our device)
+**Fixture:** the raw reads are inline above; no fixture file — no packet ever formed to save.
+**Next question:** #6's targeted fix on the notify path. Nothing further for #2.
+
+---
+
+## RL-035 — The CoreBluetooth adapter watcher fires in the field: an 8 s backoff cut to ~1 s
+
+**Date:** 2026-08-17
+**Question:** RL-024's follow-on, #20's rider carried on #2: does PR #29's macOS adapter
+watcher — implemented against bleak 3.0.2's `CentralManagerDelegate` via importlib, tested only
+against the mock transport — observe a real adapter power-on and cut the reconnect backoff
+short?
+**Setup:** `bedjet serve` attended, ~23:13–23:14 local. Bluetooth toggled **off** in Control
+Center with the daemon connected, then back **on** mid-backoff (during the 8 s sleep, third
+attempt — the protocol suggested waiting for 30 s+, but the mechanism does not care). Unit
+off/standby throughout.
+**Observation:**
+
+```
+23:14:04 WARNING link lost; will reconnect
+23:14:04 WARNING reconnect failed (… POWERED_OFF); retrying in 2s
+23:14:07 WARNING reconnect failed (…); retrying in 4s
+23:14:12 WARNING reconnect failed (…); retrying in 8s
+23:14:14 INFO    the Bluetooth adapter powered on
+23:14:14 INFO    the adapter powered on; cutting the 8s backoff short
+23:14:15 INFO    connecting to 947C… (attempt under way ~1 s after the toggle)
+```
+
+1. The watcher attached to the real stack: the graceful-degradation line (`adapter state is not
+   observable here`) did **not** fire at startup.
+2. The power-on was observed essentially instantly, the 8 s backoff was cut with ~6 s left, and
+   the next attempt began ~1 s after the toggle (one supervise tick) — against RL-024's measured
+   22 s of avoidable blindness.
+3. SIGINT landed ~1 s later, before that attempt completed. The connect path itself was not in
+   question — it runs on every session start.
+4. Incidental: the 13 s connected before the toggle logged `52 packets, 52 split` — a sixth
+   100 %-split data point (running total 18,027 of 18,034, 99.96 %).
+5. Incidental catch: the reader's final-stats line was re-logged five times with identical
+   counters, once per teardown in the retry loop — filed as #30.
+
+**Interpretation:** #20's fix is confirmed end-to-end on real CoreBluetooth: a genuine adapter
+power-on is observed and converts up to a full backoff interval of blindness into ~1 s. The #29
+rider on #2 is discharged; the graceful-degradation path correctly stayed out of the way.
+**Confidence:** high for the watcher and the cut (direct observation). The completed
+post-power-on reconnect is asserted from the attempt starting, not finishing (SIGINT first).
+**Provenance:** ✅ VERIFIED (our host and our device)
+**Fixture:** —
+**Next question:** none for #20/#29. Tonight's remaining open code question is #6's targeted
+fix (see RL-034).
