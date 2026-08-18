@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
 from bedjet_local.device.state import BedJetState, Power
 from bedjet_local.protocol.constants import STATUS_UUID, StatusMode
+from bedjet_local.protocol.decode import looks_like_packet_start
 from bedjet_local.protocol.packets import StatusPacket
 from bedjet_local.service.reader import StatusReader
 from bedjet_local.transport.base import TransportError
@@ -83,6 +86,23 @@ async def test_unknown_mode_leaves_power_unknown() -> None:
     assert collector.states[0].power is Power.UNKNOWN
 
 
+async def test_notify_mode_subscribes_with_the_packet_start_discriminator() -> None:
+    """#6: the reader must teach the transport to tell notifications from read responses.
+
+    The follow-up read runs on essentially every packet, so a subscription without a
+    discriminator leaves the backend guessing on essentially every packet — and a wrong
+    guess both mis-pairs the reassembly (RL-017's shape) and drops the true response on a
+    retired future (#6's ``InvalidStateError``). ``looks_like_packet_start`` is the right
+    oracle because the two directions cannot produce each other's shape on this firmware:
+    notifications always begin a packet, reads always serve the remainder window (RL-034).
+    """
+    transport = MockTransport()
+    await transport.connect("mock")
+    await StatusReader(transport, Collector()).start()
+
+    assert transport.discriminators[STATUS_UUID] is looks_like_packet_start
+
+
 async def test_incomplete_packet_triggers_follow_up_read() -> None:
     """RL-012: completeness is decided by the header's length byte, not the partial flag.
 
@@ -141,6 +161,40 @@ async def test_failed_follow_up_read_does_not_kill_the_reader() -> None:
     # No state published, but the reader survives and keeps working.
     transport.emit(STATUS_UUID, build_status())
     assert collector.states, "reader stopped publishing after a failed follow-up read"
+
+
+async def test_hung_follow_up_read_is_abandoned_not_waited_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A follow-up read that hangs must not be waited out on bleak's terms.
+
+    The backend gives a read 20 s, and the transport's one-GATT-operation lock is held
+    for the read's whole life — every command write queues behind it. The reader's own
+    bound abandons the read instead; the device re-sends within a second, so the next
+    packet is the retry. This is also what caps the discriminator's one new failure
+    direction (a hypothetical future firmware serving reads that begin a packet).
+    """
+    import asyncio
+
+    class HangingReadTransport(MockTransport):
+        async def read(self, characteristic: str) -> bytes:
+            await asyncio.sleep(60)
+            raise AssertionError("unreachable")
+
+    monkeypatch.setattr("bedjet_local.service.reader._FOLLOW_UP_READ_TIMEOUT_S", 0.05)
+    transport = HangingReadTransport()
+    await transport.connect("mock")
+    collector = Collector()
+    reader = StatusReader(transport, collector)
+    await reader.start()
+
+    transport.emit(STATUS_UUID, build_status()[:20])
+    await asyncio.sleep(0.2)  # long enough for the shrunken timeout to fire
+
+    assert not collector.states, "an abandoned follow-up read must not publish anything"
+    transport.emit(STATUS_UUID, build_status())
+    assert collector.states, "the reader must keep working after abandoning a read"
+    await reader.stop()
 
 
 async def test_anomalies_are_carried_into_device_state() -> None:

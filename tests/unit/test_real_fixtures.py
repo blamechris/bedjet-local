@@ -16,7 +16,7 @@ import pytest
 
 from bedjet_local.device.state import BedJetState, Power
 from bedjet_local.protocol.constants import StatusMode
-from bedjet_local.protocol.decode import decode_status
+from bedjet_local.protocol.decode import decode_status, looks_like_packet_start
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
@@ -322,3 +322,24 @@ def test_dry_reports_a_target_below_its_own_minimum(dry: bytes) -> None:
 def test_extended_heat_remains_unverified() -> None:
     """0x03 has never been observed. One correct prediction does not license a second."""
     assert 0x03 not in {m.value for m in StatusMode}
+
+
+# ── The notification discriminator (#6) ─────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("name", ALL_FIXTURES)
+def test_split_halves_are_told_apart_by_packet_start(name: str) -> None:
+    """The #6 guard hands ``looks_like_packet_start`` to the backend to decide, for each
+    value arriving while a follow-up read is pending, whether it is a notification or the
+    read's response. That routing is only sound if the two directions can never produce
+    each other's shape — so assert it on every capture we hold: split where the firmware
+    splits (20-byte notification, RL-012/RL-026; reads serve the [20:31) remainder window,
+    RL-034), the head must read as a packet start and the remainder must not.
+
+    The remainder half is invariant in practice — its byte 1 sits in the constant
+    bytes-19-25 region — so a firmware change that moves that region shows up here first.
+    """
+    packet = (FIXTURES / name).read_bytes()
+    head, remainder = packet[:20], packet[20:]
+    assert looks_like_packet_start(head), f"{name}: notification head not seen as a start"
+    assert not looks_like_packet_start(remainder), f"{name}: remainder mistaken for a start"

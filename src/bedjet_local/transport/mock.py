@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 
-from .base import DiscoveredDevice, NotifyCallback, TransportError
+from .base import DiscoveredDevice, NotificationDiscriminator, NotifyCallback, TransportError
 
 
 class MockTransport:
@@ -33,6 +33,10 @@ class MockTransport:
         self._fail_connects = fail_connects
         self._connected = False
         self._subs: dict[str, list[NotifyCallback]] = defaultdict(list)
+        self.discriminators: dict[str, NotificationDiscriminator | None] = {}
+        """What each subscription passed as its notification discriminator. The mock has
+        no read/notify ambiguity to resolve, so this is recorded for assertion, not used —
+        the #6 guard only exists if the reader actually hands one over."""
         self._write_error: TransportError | None = None
         self._adapter_power_on = asyncio.Event()
 
@@ -70,9 +74,16 @@ class MockTransport:
         self.writes.append((characteristic, bytes(data)))
         self.write_responses.append(response)
 
-    async def subscribe(self, characteristic: str, callback: NotifyCallback) -> None:
+    async def subscribe(
+        self,
+        characteristic: str,
+        callback: NotifyCallback,
+        *,
+        notification_discriminator: NotificationDiscriminator | None = None,
+    ) -> None:
         self._require()
         self._subs[characteristic].append(callback)
+        self.discriminators[characteristic] = notification_discriminator
 
     async def unsubscribe(self, characteristic: str) -> None:
         self._subs.pop(characteristic, None)

@@ -9,7 +9,13 @@ Read-only by construction — this module has no way to send a command.
   17,975 of 17,982 packets across five hardware runs arrived split (RL-026 through
   RL-033), so the follow-up read runs essentially always, every occurrence opens the
   RL-017 reassembly window, and a pending read overlapping incoming notifications on the
-  same characteristic is the race behind #6's ``InvalidStateError`` inside bleak.
+  same characteristic was the race behind #6's ``InvalidStateError`` inside bleak. That
+  race is closed at subscribe time: :func:`looks_like_packet_start` is handed to the
+  backend as its notification discriminator, so a value that begins a packet is routed
+  to us as a notification even while our follow-up read is pending. The routing is sound
+  because on this firmware the two directions cannot produce each other's shape: every
+  notification begins a packet, and a read serves the pinned remainder window — never a
+  packet start — measured at 303/303 and promoted to ✅ in RL-034.
 
 - **Poll** (``poll_interval=<seconds>``): never subscribe; read the characteristic on an
   interval and accept only whole packets. One sequential loop, so there is nothing to
@@ -52,6 +58,17 @@ from ..transport.base import Transport
 log = logging.getLogger(__name__)
 
 StateCallback = Callable[[BedJetState, StatusPacket], None]
+
+#: Upper bound on one follow-up read. Bleak's CoreBluetooth backend gives a read 20 s —
+#: hardcoded — and the transport holds its one-GATT-operation lock for the read's whole
+#: life, so a read that will never resolve stalls every command write behind it for those
+#: 20 s. The device re-sends within about a second, so abandoning a slow follow-up costs
+#: one packet interval. This also bounds the discriminator's one new failure direction:
+#: if a future firmware ever served a read that *begins* a packet, the value would be
+#: routed to the notify path and the read would sit unresolved. RL-034 says that cannot
+#: happen today (303/303 reads serve the remainder window); this makes "today" a bounded
+#: bet instead of a load-bearing one.
+_FOLLOW_UP_READ_TIMEOUT_S = 5.0
 
 
 class StatusReader:
@@ -153,7 +170,15 @@ class StatusReader:
                 self._poll_interval,
             )
             return
-        await self._transport.subscribe(STATUS_UUID, self._on_notify)
+        # The discriminator is the #6 guard. While our follow-up read is pending, the
+        # backend cannot tell that read's response from the next notification — both
+        # arrive the same way — and mis-taking a notification for the response both
+        # corrupts the pairing (RL-017's shape) and leaves the true response to land on
+        # a retired future. "Begins a packet" decides it: notifications always do, reads
+        # serve the remainder window and never do (RL-034, ✅).
+        await self._transport.subscribe(
+            STATUS_UUID, self._on_notify, notification_discriminator=looks_like_packet_start
+        )
         log.info("status reader started")
 
     async def stop(self) -> None:
@@ -339,7 +364,9 @@ class StatusReader:
 
     async def _complete_partial(self, first: bytes) -> None:
         try:
-            remainder = await self._transport.read(STATUS_UUID)
+            remainder = await asyncio.wait_for(
+                self._transport.read(STATUS_UUID), timeout=_FOLLOW_UP_READ_TIMEOUT_S
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -351,6 +378,11 @@ class StatusReader:
             else:
                 log.debug("follow-up read failed: %s", exc)
             return
+        # Publication order can briefly invert here: a *whole* notification arriving while
+        # this read was pending has already published newer state, and this reassembled
+        # packet is older. 7 of 17,982 packets arrive whole, the inversion corrects on the
+        # next packet (~1 s), and the pre-#6 behavior corrupted both values in this window
+        # instead — accepted, not accidental.
         self._publish(decode_status(reassemble(first, remainder)))
 
     # ── both modes ──────────────────────────────────────────────────────────────────────
