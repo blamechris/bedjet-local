@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from bedjet_local.device.state import BedJetState, Power
@@ -238,6 +240,56 @@ async def test_connection_retry_semantics() -> None:
             continue
     assert transport.is_connected
     assert transport.connect_attempts == 3
+
+
+def _stop_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.message for r in caplog.records if "status reader stopped" in r.message]
+
+
+async def test_repeat_stop_logs_the_summary_once(caplog: pytest.LogCaptureFixture) -> None:
+    """#30: the final-stats line marks a running → stopped transition, not a stop() call.
+
+    The session tears down before every reconnect attempt, so a long outage stops the
+    same reader once per backoff tick. Five identical summary lines for one reader run
+    read as a reader that kept running and re-stopping — the attended-run log that filed
+    the issue.
+    """
+    caplog.set_level(logging.INFO, logger="bedjet_local.service.reader")
+    transport = MockTransport()
+    await transport.connect("mock")
+    reader = StatusReader(transport, Collector())
+    await reader.start()
+
+    for _ in range(5):
+        await reader.stop()
+
+    assert len(_stop_lines(caplog)) == 1
+
+
+async def test_stop_before_any_start_is_silent(caplog: pytest.LogCaptureFixture) -> None:
+    """A reader that never ran has no stats worth a line — all zeros, stated as history."""
+    caplog.set_level(logging.INFO, logger="bedjet_local.service.reader")
+    transport = MockTransport()
+    await transport.connect("mock")
+
+    await StatusReader(transport, Collector()).stop()
+
+    assert _stop_lines(caplog) == []
+
+
+async def test_restart_re_arms_the_stop_summary(caplog: pytest.LogCaptureFixture) -> None:
+    """Each genuine run still gets its closing line — the guard silences echoes, not stops."""
+    caplog.set_level(logging.INFO, logger="bedjet_local.service.reader")
+    transport = MockTransport()
+    await transport.connect("mock")
+    reader = StatusReader(transport, Collector())
+
+    for _ in range(2):
+        await reader.start()
+        await reader.stop()
+        await reader.stop()
+
+    assert len(_stop_lines(caplog)) == 2
 
 
 async def test_milestone_1_never_writes() -> None:
