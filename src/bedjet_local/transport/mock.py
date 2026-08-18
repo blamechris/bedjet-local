@@ -32,6 +32,7 @@ class MockTransport:
         self._fail_connects = fail_connects
         self._connected = False
         self._subs: dict[str, list[NotifyCallback]] = defaultdict(list)
+        self._write_error: TransportError | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -61,6 +62,9 @@ class MockTransport:
         self, characteristic: str, data: bytes, *, response: bool | None = None
     ) -> None:
         self._require()
+        if self._write_error is not None:
+            error, self._write_error = self._write_error, None
+            raise error
         self.writes.append((characteristic, bytes(data)))
         self.write_responses.append(response)
 
@@ -86,6 +90,15 @@ class MockTransport:
         """Simulate an unexpected disconnect."""
         self._connected = False
         self._subs.clear()
+
+    def fail_next_write(self, message: str = "simulated write failure") -> None:
+        """Make the next :meth:`write` raise, one-shot, without recording the write.
+
+        This is the ambiguous case the real radio produces: a write request that dies in
+        flight, where neither side of the link can say whether the payload arrived. Not
+        recording it in ``writes`` is deliberate — the test, like the caller, must not get
+        to know."""
+        self._write_error = TransportError(message)
 
     def refuse_next_connects(self, count: int) -> None:
         """Make the next ``count`` connection attempts fail.

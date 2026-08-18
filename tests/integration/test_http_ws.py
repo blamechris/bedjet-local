@@ -337,9 +337,13 @@ def test_the_contract_names_exactly_the_routes_this_adapter_serves() -> None:
     description cannot drift — what can drift is the api-layer document itself. Holding
     the two name sets to exact equality means a route added without a contract entry, or
     an operation described but never served, fails here by name."""
-    operations = {operation["name"] for operation in agent_contract()["operations"]}
+    listed = [operation["name"] for operation in agent_contract()["operations"]]
+    operations = set(listed)
     served = {name for name, _method, _path, _handler in ROUTES}
     assert operations == served
+    # Set equality alone would let a duplicated name collapse silently.
+    assert len(listed) == len(operations)
+    assert len(ROUTES) == len(served)
 
 
 async def test_the_served_contract_describes_this_transport_truthfully() -> None:
@@ -365,6 +369,34 @@ async def test_the_served_contract_describes_this_transport_truthfully() -> None
         assert set(routes) == {op["name"] for op in body["operations"]}
         assert routes["set_mode"] == {"method": "POST", "path": "/api/v1/command/mode"}
         assert routes["health"] == {"method": "GET", "path": "/healthz"}
+
+        # The shape of the http section is what a parser depends on; the prose inside it
+        # stays the review gate's business.
+        assert set(body["http"]) == {
+            "auth",
+            "requests",
+            "errors",
+            "routes",
+            "failure_mode_status",
+            "other_status",
+            "notes",
+        }
+        assert set(body["http"]["other_status"]) == {"200", "400", "401", "403", "500"}
+        # The api-layer document and this adapter's translation table, held together the
+        # same way ROUTES and the operation list are.
+        assert set(body["failure_modes"]) == set(FAILURE_MODE_STATUS)
+
+        # Every advertised route is one the running application actually registered —
+        # the document may not advertise a path this server would 404.
+        app = client.app
+        assert app is not None
+        registered = {
+            (route.method, route.resource.canonical)
+            for route in app.router.routes()
+            if route.resource is not None
+        }
+        for spec in routes.values():
+            assert (spec["method"], spec["path"]) in registered
     finally:
         await client.close()
         await session.stop()

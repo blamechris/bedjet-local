@@ -30,8 +30,9 @@ import ipaddress
 import json
 import logging
 import secrets
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 from aiohttp import WSMsgType, web
@@ -60,11 +61,13 @@ API_PREFIX = "/api/v1"
 #: so the number an agent is told to expect is the number the middleware produces, by
 #: construction. 409 refused / 503 unavailable / 502 unverified; the reasoning for keeping
 #: them distinct is ADR-0004 decision 4.
-FAILURE_MODE_STATUS: dict[str, int] = {
-    "refused": 409,
-    "unavailable": 503,
-    "unverified": 502,
-}
+FAILURE_MODE_STATUS: Mapping[str, int] = MappingProxyType(
+    {
+        "refused": 409,
+        "unavailable": 503,
+        "unverified": 502,
+    }
+)
 
 _API_KEY = web.AppKey[BedJetAPI]("bedjet_api")
 _CONFIG_KEY = web.AppKey["ServerConfig"]("bedjet_config")
@@ -295,6 +298,16 @@ async def handle_contract(_request: web.Request) -> web.Response:
             "parameter. Requests carrying an Origin header, or an unrecognised Host, "
             "are refused."
         ),
+        "requests": (
+            "Parameters travel as a JSON object in the body of a POST "
+            "(Content-Type: application/json); GET routes take no parameters. An "
+            "omitted optional parameter takes its default."
+        ),
+        "errors": (
+            'Every non-2xx answer is {"error": "<kind>", "detail": "<one sentence>"} — '
+            "kind is the failure mode name for 409/502/503, and the detail is written "
+            "to be read, not parsed."
+        ),
         "routes": {
             operation: {"method": method, "path": path} for operation, method, path, _ in ROUTES
         },
@@ -304,6 +317,10 @@ async def handle_contract(_request: web.Request) -> web.Response:
             "400": "invalid_request — malformed body; nothing was sent",
             "401": "unauthorized — token missing or wrong",
             "403": "forbidden — Origin header present, or unrecognised Host",
+            "500": (
+                "error — unexpected failure; whether anything was written is unknown, "
+                "so treat it like unverified and never blind-retry"
+            ),
         },
         "notes": (
             "stream_state is a WebSocket: connect to its path with a WebSocket client; "

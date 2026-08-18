@@ -97,6 +97,36 @@ async def test_off_raises_unverified_when_the_device_ignores_it() -> None:
     assert transport.writes, "the write did happen — that is why this is unverified, not refused"
 
 
+async def test_a_write_that_dies_in_flight_is_unverified_never_unavailable() -> None:
+    """The exception boundary the served contract depends on: from the moment the write
+    is attempted, "the link failed" and "the device was written to" are no longer
+    exclusive — a write request can be delivered and its confirmation lost. Reporting
+    that as a link problem would tell the caller "nothing was sent" about a command a
+    heater may be obeying right now (ADR-0004 decision 4)."""
+    transport = MockTransport()
+    commander = await _armed(transport)
+    transport.fail_next_write()
+
+    with pytest.raises(CommandUnverified, match="may or may not have reached"):
+        await commander.send_off()
+    # Like the caller, the test does not get to know whether the bytes landed — what it
+    # gets to know is that the failure was not dressed up as "nothing was sent".
+    assert transport.writes == []
+
+
+async def test_a_transport_failure_before_the_write_is_not_unverified() -> None:
+    """The counterpart boundary: with no state to compare against, the command dies as a
+    refusal before any write is attempted — a pre-write failure must keep reporting that
+    nothing was sent."""
+    transport = MockTransport()
+    commander = await _armed(transport, initial=None)
+    transport.fail_next_write()
+
+    with pytest.raises(CommandRefused, match="nothing to compare against"):
+        await commander.send_off()
+    assert transport.writes == []
+
+
 async def test_unverified_message_tells_the_operator_how_to_recover() -> None:
     """A heater still running after a failed OFF is exactly when the message matters."""
     transport = MockTransport()

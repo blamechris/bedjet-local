@@ -85,11 +85,11 @@ def agent_contract() -> dict[str, Any]:
             (
                 "The protocol has no acknowledgement. A command succeeds only when the "
                 "device's own subsequent status visibly reflects it; 'unverified' means "
-                "bytes were written and that confirmation never came — which may mean the "
-                "device obeyed and the report was lost. Never blind-retry an unverified "
-                "command. The three failure modes below permit different responses; "
-                "flattening them into 'it failed' will eventually retry a write against a "
-                "heater that already accepted it."
+                "the write went out — or died in flight — and that confirmation never "
+                "came, which may mean the device obeyed and the report was lost. Never "
+                "blind-retry an unverified command. The three failure modes below "
+                "permit different responses; flattening them into 'it failed' will "
+                "eventually retry a write against a heater that already accepted it."
             ),
             (
                 "The link and the heater are independent facts. 'available' is about the "
@@ -128,9 +128,11 @@ def agent_contract() -> dict[str, Any]:
             },
             "unverified": {
                 "meaning": (
-                    "Bytes were written and the device did not visibly obey. The command "
-                    "may have taken effect with the confirmation lost, or been discarded "
-                    "entirely; there is no way to tell from here."
+                    "The write may have reached the device and may not have: either the "
+                    "bytes went out and the device did not visibly obey, or the link "
+                    "failed during the write itself. The command may have taken effect "
+                    "with the confirmation lost, or been discarded entirely; there is no "
+                    "way to tell from here."
                 ),
                 "device_was_written_to": True,
                 "response": (
@@ -167,13 +169,26 @@ def agent_contract() -> dict[str, Any]:
             ),
             "min_target_c / max_target_c": (
                 "The permitted target range for the current mode, live from the device. "
-                "It moves when the mode moves. These fields are the authority a "
-                "set_temperature call is checked against."
+                "It moves when the mode moves. These fields are the final gate a "
+                "set_temperature call is checked against; while they are null the "
+                "bounds are unknown and set_temperature is refused."
+            ),
+            "null fields": (
+                "Every reading-derived field is null before the device has first "
+                "reported. Null is 'unknown', never 'zero' and never 'off'."
             ),
             "anomalies": (
                 "Decode oddities, surfaced rather than swallowed. Non-empty is worth "
                 "reporting, not worth panicking over."
             ),
+        },
+        "returns_vocabulary": {
+            "state": "the state object described by state_semantics",
+            "capabilities": "the build's limits (modes, steps, sanity envelope)",
+            "command_results": "the outcome object described by command_results",
+            "contract": "this document",
+            "liveness": "an is-the-daemon-alive answer that says nothing about the device",
+            "state_stream": "a push stream of state objects, one per change",
         },
         "command_results": {
             "ok": "The request is satisfied.",
@@ -188,11 +203,16 @@ def agent_contract() -> dict[str, Any]:
                 "therefore nothing was verified."
             ),
             "detail": "One sentence saying what happened, written to be shown to a human.",
+            "dry_run": (
+                "Echoes the request's dry_run. On a rehearsal, changed is false and "
+                "sent is null — nothing goes to the device."
+            ),
             "before / after": "State snapshots taken around the command.",
         },
         "operations": [
             {
                 "name": "health",
+                "returns": "liveness",
                 "kind": "service",
                 "physical": False,
                 "purpose": "Liveness of the daemon process.",
@@ -204,16 +224,20 @@ def agent_contract() -> dict[str, Any]:
             },
             {
                 "name": "get_contract",
+                "returns": "contract",
                 "kind": "service",
                 "physical": False,
                 "purpose": "This document.",
                 "params": [],
                 "guidance": (
-                    "Static per build. Re-read it when contract_version changes, not on a schedule."
+                    "Static within a build: re-read it at the start of a session, or "
+                    "after any call answers 404 or 405. The transport section is the "
+                    "adapter's own and can move without contract_version."
                 ),
             },
             {
                 "name": "get_state",
+                "returns": "state",
                 "kind": "read",
                 "physical": False,
                 "purpose": "The current belief about the device, with its age.",
@@ -227,6 +251,7 @@ def agent_contract() -> dict[str, Any]:
             },
             {
                 "name": "get_capabilities",
+                "returns": "capabilities",
                 "kind": "read",
                 "physical": False,
                 "purpose": "What this build permits: modes, fan steps, wire granularity.",
@@ -239,6 +264,7 @@ def agent_contract() -> dict[str, Any]:
             },
             {
                 "name": "stream_state",
+                "returns": "state_stream",
                 "kind": "read",
                 "physical": False,
                 "purpose": "State pushed on every change, over a one-way stream.",
@@ -250,6 +276,7 @@ def agent_contract() -> dict[str, Any]:
             },
             {
                 "name": "turn_off",
+                "returns": "command_results",
                 "kind": "command",
                 "physical": True,
                 "purpose": "Switch the unit off.",
@@ -264,6 +291,7 @@ def agent_contract() -> dict[str, Any]:
             },
             {
                 "name": "set_mode",
+                "returns": "command_results",
                 "kind": "command",
                 "physical": True,
                 "purpose": "Select an operating mode by name.",
@@ -289,6 +317,7 @@ def agent_contract() -> dict[str, Any]:
             },
             {
                 "name": "set_temperature",
+                "returns": "command_results",
                 "kind": "command",
                 "physical": True,
                 "purpose": "Set the target temperature, in either unit.",
@@ -308,15 +337,19 @@ def agent_contract() -> dict[str, Any]:
                     _dry_run_param(),
                 ],
                 "guidance": (
-                    f"The wire's granularity is {TEMPERATURE_STEP_C} °C. The permitted "
-                    "range is per-mode and live on the state (min_target_c / "
-                    "max_target_c); it is checked against the device's own report, and "
-                    "a refusal quotes the device's current bounds. Do not pre-validate "
-                    "against a cached or assumed range."
+                    "Refused unless the unit is running (power 'on') — start it with "
+                    "set_mode first — and refused until the device has reported bounds "
+                    "for the current mode. The wire's granularity is "
+                    f"{TEMPERATURE_STEP_C} °C, so the value sent may differ slightly "
+                    "from the one asked for. The permitted range is per-mode and live "
+                    "on the state (min_target_c / max_target_c); it is checked against "
+                    "the device's own report, and a refusal quotes the device's current "
+                    "bounds. Do not pre-validate against a cached or assumed range."
                 ),
             },
             {
                 "name": "set_fan",
+                "returns": "command_results",
                 "kind": "command",
                 "physical": True,
                 "purpose": "Set fan speed as a percentage.",
@@ -332,12 +365,17 @@ def agent_contract() -> dict[str, Any]:
                     _dry_run_param(),
                 ],
                 "guidance": (
-                    "Remember fan_is_stale when reading the result back: an idle unit "
-                    "reports the last session's speed as a memory, not as airflow."
+                    "Refused unless the unit is running — the fan byte is unobservable "
+                    "in standby. Send a multiple of 5: an in-range value off the 5% "
+                    "grid is snapped on the wire but verified against the value you "
+                    "asked for, so it reports unverified even when the device obeyed. "
+                    "And remember fan_is_stale when reading the result back: an idle "
+                    "unit reports the last session's speed as a memory, not as airflow."
                 ),
             },
             {
                 "name": "yield_link",
+                "returns": "state",
                 "kind": "lease",
                 "physical": False,
                 "purpose": (
@@ -349,7 +387,11 @@ def agent_contract() -> dict[str, Any]:
                         "name": "seconds",
                         "type": "number",
                         "required": True,
-                        "constraints": "positive; the link returns when it expires",
+                        "constraints": (
+                            "positive seconds; the link returns when it expires. 300 "
+                            "is a sensible default when the owner did not name a "
+                            "duration"
+                        ),
                     },
                 ],
                 "guidance": (
@@ -362,6 +404,7 @@ def agent_contract() -> dict[str, Any]:
             },
             {
                 "name": "resume_link",
+                "returns": "state",
                 "kind": "lease",
                 "physical": False,
                 "purpose": "End a yield early.",
