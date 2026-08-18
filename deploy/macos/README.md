@@ -14,27 +14,30 @@ route, which is what this directory does. Full account: **RL-025** and **RL-028*
 This directory is the launch arrangement that fixes it: a minimal app bundle that carries
 the key, plus a LaunchAgent that starts the daemon *through* it.
 
-> **Status: ✅ the grant works under `launchd`. ✅ `launchctl` can stop the daemon gracefully —
-> aim at the `application.*` job, not the LaunchAgent label (**RL-031**). ❓ the login-time
-> *spawn* is unverified, and ❓ what a real logout or reboot delivers is unmeasured.**
+> **Status: the whole unattended cycle is measured. ✅ the grant works under `launchd`
+> (RL-029/RL-030). ✅ `launchctl` stops the daemon gracefully — aim at the `application.*` job,
+> not the LaunchAgent label (RL-031). ✅ login spawns it unattended, connected on attempt 1
+> (RL-033). ✅ an OS restart delivers SIGTERM and the release runs to completion (RL-033).
+> ✅ even a fully ungraceful drop costs ~3 s of vendor-app delay, not a lockout (RL-032).**
 >
 > Double-clicked from Finder, the bundle obtains the Bluetooth grant and the `uv` → Python child
-> inherits it (**RL-029**, with RL-025 as the matched control). Started by `launchd` via
-> `launchctl kickstart`, the same thing happens — connected on attempt 1 in ~1 s and served state
-> (**RL-030**). So the responsible-process trick works when a daemon initiates it, not only a
-> human, which was the substance of
-> [#9](https://github.com/blamechris/bedjet-local/issues/9) item 3.
+> inherits it (**RL-029**, with RL-025 as the matched control). Started by `launchd` — via
+> `kickstart` (RL-030), via `bootstrap` itself, or by `RunAtLoad` at login after a reboot
+> (RL-033) — the same thing happens. The responsible-process trick works with no human in the
+> loop, which was the substance of
+> [#9](https://github.com/blamechris/bedjet-local/issues/9).
 >
-> Two things are still open:
+> Two loose ends, neither blocking:
 >
-> 1. **The spawn at login has not been observed.** RL-030 found `bootstrap` registering the job
->    with `RunAtLoad` and never running it (`runs = 0`), for reasons not yet understood. That
->    failure is *silent*, so it cannot be assumed away.
-> 2. **What logout, shutdown, or reboot actually deliver to the daemon is unmeasured.** The
->    stop section explains why per-job teardown behaving like `bootout` — i.e. a graceful
->    SIGTERM — is now the likelier outcome, and why that is still a hypothesis.
+> 1. RL-030 once watched `bootstrap` register the job and never run it (`runs = 0`). It did not
+>    reproduce (RL-033: `runs = 1`, spawned within 8 s); the one difference on record is a
+>    26-day-old GUI session then versus a fresh one now. If an unattended start ever silently
+>    fails, this is the first thing to check.
+> 2. A logout *without* a shutdown has never been observed. RL-032 bounds its worst case at
+>    ~3 s of vendor-app delay, so it gates nothing.
 >
-> Treat step 4 as untested and read both warnings before installing it.
+> Step 4 is verified end to end (RL-033) — but read the `RunAtLoad` warning below before
+> installing it, because "works" and "should be running at every login" are different claims.
 
 ## What is here
 
@@ -141,8 +144,10 @@ understood):
   the job left to stop.
 - **`application.local.bedjet.daemon.<n>.<n>`** — the job LaunchServices registers for the
   launched bundle itself. This one holds the live daemon. Its PPID
-  of 1 means launchd is its *parent*, not that it was orphaned. The trailing numbers are
-  per-launch ASN components: discover the label at stop time, never hardcode it.
+  of 1 means launchd is its *parent*, not that it was orphaned. The trailing numeric
+  components are opaque and undocumented — observed *stable* across launches and a reboot on
+  this host (RL-033), but nothing promises that: discover the label at stop time, never
+  hardcode it.
 
 **To stop the daemon gracefully:**
 
@@ -169,12 +174,10 @@ spawns the interpreter as a child, so SIGTERM arrives at `uv` rather than at Pyt
 forwards it** — measured synthetically in #14 and then against the live link in RL-030 and
 RL-031. Worth re-checking if the launcher ever stops going through `uv`.
 
-**What is still open:** whether a real logout, shutdown, or reboot goes through this same
-per-job teardown. `bootout` of the application job is launchd's ordinary job-stop machinery,
-so a graceful SIGTERM at session teardown is now the likelier outcome — but Apple's archived
-loginwindow documentation predicts an outright SIGKILL for background processes, and neither
-has been measured on this host (RL-031's next question). Until one logout is observed, do not
-claim the reboot path releases the link.
+**Measured on a real restart (RL-033):** the OS-initiated shutdown path delivered SIGTERM and
+the release ran to completion — the reboot case is graceful, measured, not hypothesized. A
+logout *without* a shutdown remains unobserved; RL-032 bounds its worst case at ~3 s of
+vendor-app delay after an ungraceful drop, so nothing gates on it.
 
 ## ⚠️ What `RunAtLoad` actually means here
 
