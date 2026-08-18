@@ -6,6 +6,7 @@ below them. When one of them needs something this module does not expose, the an
 add it here.
 """
 
+from .contract import CONTRACT_VERSION, agent_contract
 from .models import Capabilities, CommandOutcome, DeviceSnapshot
 from .service import (
     ApiError,
@@ -18,6 +19,7 @@ from .service import (
 )
 
 __all__ = [
+    "CONTRACT_VERSION",
     "ApiError",
     "BedJetAPI",
     "Capabilities",
@@ -27,5 +29,6 @@ __all__ = [
     "SnapshotListener",
     "Unavailable",
     "Unverified",
+    "agent_contract",
     "available_modes",
 ]

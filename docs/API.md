@@ -57,6 +57,7 @@ something recognised — see ADR-0004 for why.
 | `GET /healthz` | Liveness. The one route that answers without a credential, and it says nothing about the device. |
 | `GET /api/v1/state` | The current snapshot. |
 | `GET /api/v1/capabilities` | What this build permits: modes, fan steps, wire granularity. |
+| `GET /api/v1/contract` | The API, described for an agent instead of a person. See below. |
 | `GET /api/v1/ws` | WebSocket. Pushes `{"type": "state", "state": {…}}` on connect and on every change. One-way. |
 
 ### Commanding
@@ -143,6 +144,20 @@ heater to switch off is `ok: true, changed: false, sent: null`, a satisfied requ
 means we wrote to a heater and cannot tell you what happened — the write may have taken
 effect with the confirmation lost, because this protocol has no acknowledgement (RL-018).
 Blind retry is reasonable for one and not the other.
+
+### The agent-facing contract
+
+`GET /api/v1/contract` serves this API described for an agent rather than for a person
+reading this page: when **not** to call, what each of the three failure modes permits, the
+lease, and the state fields that mislead a consumer who takes their names at face value. It
+is the Milestone 4 payload of [ADR-0005](decisions/ADR-0005-milestone-4-scope-and-siting.md)
+decision 1 — deliberately not an MCP server or a tool schema; whichever of those the
+eventual caller needs is generated from this document, which stays the one authoritative
+statement.
+
+The document is static per build (`contract_version` says when to re-read it), enumerables
+are derived from the same code the command path uses, and a parity test holds its route
+table to exactly the routes this server registers.
 
 ---
 
