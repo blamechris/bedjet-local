@@ -1986,3 +1986,63 @@ error lines and verified connected time — measured, not inferred).
 **Fixture:** —
 **Next question:** none open in the tracker. RL-033's optional launchd follow-ups (pure
 logout; the TCC cdhash rebuild question) remain optional and unqueued.
+
+---
+
+## RL-037 — The soak's postscript: fifteen quiet hours, and the first unprovoked drop reconnects in 2 s
+
+**Date:** 2026-08-18
+**Question:** none pre-registered — RL-036 closed its measurement window at 08:06:27 and left
+the daemon running. This entry records what the rest of the log shows: the soak continued for
+another seven hours, then the link dropped on its own — the first unprovoked drop observed in
+the field — and the recovery path ran with no human in the loop.
+**Setup:** the same run as RL-036 (`bedjet serve`, notification mode, log at
+`~/Library/Logs/bedjet-soak.log`), read after the fact. The daemon was later terminated
+without a clean shutdown, sometime after 15:22:15 (no stop lines — consistent with its
+Terminal closing), so observation ends at the log's last line.
+**Observation:**
+
+```
+15:22:13 WARNING BLE link dropped
+15:22:14 INFO    status reader stopped (221271 packets, 221260 split, 3 rejected, 11 skipped while busy)
+15:22:15 INFO    connected to 947CDF5E-…
+15:22:15 INFO    subscribed to 00002000-…
+15:22:15 INFO    status reader started
+15:22:15 INFO    link lost -> connected
+```
+
+1. **The unbroken connection reached 15 h 22 m 32 s** (`connecting -> connected` 23:59:41 →
+   `BLE link dropped` 15:22:13) — RL-036's window nearly doubled, still with **zero**
+   `did_update_value_for_characteristic` / `InvalidStateError` lines anywhere in the log.
+   Expected at the pre-fix rate over 922 min: **~37**. P(zero by luck) ≈ e^−37 ≈ 10⁻¹⁶.
+2. The link almost certainly carried traffic the whole time, not merely stayed open: the
+   reader's final stats work out to **4.00 packets/s** over the 55,353 s it ran — matching
+   RL-035's measured rate to 0.06 % — so any hour-scale gap would have depressed the average
+   visibly. Weaker than RL-036's spot checks (an average cannot exclude minutes-scale gaps),
+   but the daemon was unattended after 08:06 and no better instrument exists post hoc. Split
+   ratio 99.995 % (221,260 of 221,271), by far the largest data point in the RL-035 series.
+3. **The first unprovoked link drop on record, recovered unattended in ~2 s:** every prior
+   drop in this log was provoked (SIGTERM, `bootout`, restart, BT toggle, SIGKILL). This one
+   arrived on its own at 15:22:13; reconnected, re-subscribed, reader restarted by 15:22:15,
+   on the **first attempt** — no `reconnect failed` / backoff lines. No prior daemon-reconnect
+   figure exists to compare against (RL-032's ~3 s is the *vendor app* connecting after our
+   SIGKILL — a different client); this is the baseline datum.
+4. The final-stats line fired **exactly once**, on the one running→stopped transition —
+   correct behavior, but consistency with #34, not a discriminating test of it: the relog
+   RL-035 §5 caught (five relogs, one per failed-retry teardown) needed a retry loop, and
+   this reconnect succeeded immediately, so only one teardown ever happened.
+5. Incidental: a third RL-017 checksum discard at 12:24:34 (sums to 0xff) — three in 922 min
+   of connected time; small numbers, consistent with the RL-033 §6 / RL-036 §5 baseline, no
+   action. Cross-check: the stats line's `3 rejected` equals exactly the three checksum
+   WARNING lines in the log.
+
+**Interpretation:** everything RL-036 concluded, at double the exposure — and the part no test
+could schedule: a genuine field drop exercised the Milestone-3 recovery machinery end-to-end
+(supervise loop) with nobody watching, and it worked, first try. #6 stays closed with a wider
+margin.
+**Confidence:** high up to 15:22:15 (direct log evidence; counters cross-checked). The second
+connection's duration is unobserved — the process died without logging, bounded only by a
+16:26 check finding it gone and the BLE slot free.
+**Provenance:** ✅ VERIFIED (our host and our device)
+**Fixture:** —
+**Next question:** none. This closes the soak's account; the tracker remains empty.
