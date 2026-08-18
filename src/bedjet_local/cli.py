@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import signal
 import sys
@@ -276,11 +277,16 @@ async def cmd_watch(args: argparse.Namespace) -> int:
         if args.packets and len({bytes(c) for c in captures}) >= args.packets:
             done.set()
 
-    reader = StatusReader(transport, on_state)
+    reader = StatusReader(transport, on_state, poll_interval=args.poll)
     await reader.start()
 
-    print("\nWatching. The BedJet notifies rapidly while ON and is mostly silent while OFF —")
-    print("silence here is not necessarily a fault.")
+    if args.poll:
+        print(f"\nWatching by whole-packet poll every {args.poll:.2f}s (#2 experiment) —")
+        print("a reading should arrive each interval regardless of device state; the")
+        print("summary on exit is the experiment's verdict.")
+    else:
+        print("\nWatching. The BedJet notifies rapidly while ON and is mostly silent while OFF —")
+        print("silence here is not necessarily a fault.")
     if args.seconds:
         print(
             f"Releasing the link automatically after {args.seconds:.0f}s. Ctrl-C to stop early.\n"
@@ -303,10 +309,22 @@ async def cmd_watch(args: argparse.Namespace) -> int:
         print("\nLink released — the vendor app can connect again.")
 
     distinct = len({bytes(c) for c in captures})
-    print(
-        f"\n{reader.packets_seen} packets seen, {distinct} distinct "
-        f"({reader.partials_seen} needed a follow-up read)."
-    )
+    if args.poll:
+        rtt = reader.poll_rtt_ms
+        rtt_text = "n/a" if rtt is None else f"{rtt[0]:.0f}/{rtt[1]:.0f}/{rtt[2]:.0f} ms"
+        print(
+            f"\n{reader.polls} polls: {reader.polls_whole} whole, {reader.polls_partial} "
+            f"partial, {reader.polls_alien} alien, {reader.rejected_checksum} rejected, "
+            f"{reader.poll_failures} failed reads; {distinct} distinct; "
+            f"read rtt min/mean/max {rtt_text}."
+        )
+        print("Record this on issue #2. Whole ≈ 100% with an acceptable rtt is the go")
+        print("signal for making polling the default; anything else is the stop signal.")
+    else:
+        print(
+            f"\n{reader.packets_seen} packets seen, {distinct} distinct "
+            f"({reader.partials_seen} needed a follow-up read)."
+        )
     if args.save and captures:
         args.save.write_bytes(captures[-1])
         print(f"Saved last packet to {args.save}")
@@ -641,6 +659,7 @@ async def cmd_serve(args: argparse.Namespace) -> int:
         args.address,
         connect_timeout=args.timeout,
         settle_timeout=args.settle,
+        poll_interval=args.poll,
     )
     await session.start()
     api = BedJetAPI(session)
@@ -693,7 +712,11 @@ async def cmd_mqtt(args: argparse.Namespace) -> int:
 
     transport = BleakTransport()
     session = DeviceSession(
-        transport, args.address, connect_timeout=args.timeout, settle_timeout=args.settle
+        transport,
+        args.address,
+        connect_timeout=args.timeout,
+        settle_timeout=args.settle,
+        poll_interval=args.poll,
     )
     await session.start()
     bridge = MqttBridge(BedJetAPI(session), config)
@@ -730,6 +753,22 @@ async def cmd_mqtt(args: argparse.Namespace) -> int:
             stop_wait.cancel()
             await _release(_drain_bridge, session.stop)
     return 0
+
+
+def _poll_seconds(text: str) -> float:
+    """Argparse type for ``--poll``: refused before any BLE work, not after.
+
+    The reader raises on a non-positive interval too, but by then the link is already
+    held — and a traceback that leaves the device's one client slot occupied until
+    process exit is a worse refusal than argparse saying no at the prompt.
+    """
+    value = float(text)
+    # Finite matters as much as positive: `inf` parses, sleeps forever after one read,
+    # and holds the device's only client slot while doing it; `nan` corrupts the event
+    # loop's timer heap. Both sail through a bare `<= 0`.
+    if not (math.isfinite(value) and value > 0):
+        raise argparse.ArgumentTypeError("must be a positive, finite number of seconds")
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -790,6 +829,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="stop after N distinct packets (repeats do not count). 0 = no limit.",
     )
     p_watch.add_argument("--save", type=Path, help="write last packet to file")
+    p_watch.add_argument(
+        "--poll",
+        type=_poll_seconds,
+        default=None,
+        metavar="S",
+        help="read a whole status packet every S seconds instead of subscribing "
+        "(#2 experiment — the exit summary carries the verdict)",
+    )
     p_watch.set_defaults(func=cmd_watch)
 
     p_off = sub.add_parser(
@@ -888,6 +935,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--timeout", type=float, default=20.0)
     p_serve.add_argument("--force", action="store_true", help=force_help)
     p_serve.add_argument("--settle", type=float, default=10.0, metavar="S")
+    p_serve.add_argument(
+        "--poll",
+        type=_poll_seconds,
+        default=None,
+        metavar="S",
+        help="read whole status packets every S seconds instead of subscribing to "
+        "notifications (#2 experiment; default: notifications)",
+    )
     p_serve.set_defaults(func=cmd_serve)
 
     p_mqtt = sub.add_parser(
@@ -912,6 +967,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_mqtt.add_argument("--timeout", type=float, default=20.0)
     p_mqtt.add_argument("--force", action="store_true", help=force_help)
     p_mqtt.add_argument("--settle", type=float, default=10.0, metavar="S")
+    p_mqtt.add_argument(
+        "--poll",
+        type=_poll_seconds,
+        default=None,
+        metavar="S",
+        help="read whole status packets every S seconds instead of subscribing to "
+        "notifications (#2 experiment; default: notifications)",
+    )
     p_mqtt.set_defaults(func=cmd_mqtt)
 
     return parser
