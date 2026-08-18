@@ -1752,3 +1752,101 @@ logout+login answers that *and* #9's login-spawn question in the same run. Separ
 vendor app connect after a SIGKILL-dropped link? That is the remaining evidence gap behind
 option 3 in #16, and it also covers the paths no signal mechanism can reach (power loss, panic,
 forced restart).
+
+---
+
+## RL-032 — an ungraceful drop does not lock the vendor app out: reconnect in ~3 s after SIGKILL
+
+**Date:** 2026-08-17
+**Question:** #16 priced every option against "a dropped-not-released link can lock the owner's
+vendor app out," and nothing had ever measured it — the issue itself conceded RL-024 was only
+suggestive, and `_release`'s docstring asserts the opposite (the OS frees the link when the
+process exits; only the notification to the device is lost). Which is it?
+**Hypothesis, stated before the run:** the OS frees the slot on process death and the vendor
+app connects within seconds.
+**Setup:** Daemon started via `open -a` (RL-029 route), connected read-only, unit `off /
+standby`. Owner present with the Android vendor app force-closed. The kill targets the
+**Python** PID — the process holding CoreBluetooth — rather than `uv`, because SIGKILL cannot
+be forwarded and the point is that *nothing* graceful runs.
+**Observation:** SIGKILL at 17:59:26 local: **zero** new log lines — no `SIGTERM received`, no
+`Link released` — both PIDs gone, port closed. The device was never told. The owner then opened
+the vendor app: **connected in ~3 seconds** (owner-counted, not instrumented). Vendor app
+force-closed afterwards; subsequent daemon runs connected normally.
+**Interpretation:** **The lockout premise behind #16 is disproven for process death.** macOS
+tears down the CoreBluetooth connection when the holding process dies, and the device accepts
+the next client within seconds. The graceful release's value is immediacy and telling the
+device — not lockout prevention. This also covers the failure modes no signal mechanism can
+ever reach — power loss, kernel panic, forced restart — which the #16 analysis had flagged as
+a hard requirement for *every* option, not an escape hatch for one.
+**Confidence:** high for the direction; the ~3 s figure is a single owner-counted trial.
+**Provenance:** ✅ VERIFIED (our host, our device, and the owner's vendor app)
+**Fixture:** —
+**Next question:** none for #16 — this closes its evidence gap. The daemon-side reclaim after
+an outside client held the device is already RL-024's measurement.
+
+---
+
+## RL-033 — the full unattended cycle, measured: restart delivers SIGTERM, login spawns the daemon
+
+**Date:** 2026-08-17
+**Question:** Two questions survived RL-031: what a real OS-initiated teardown delivers to the
+`application.*` job (per-job `bootout`-like SIGTERM, or the outright SIGKILL that Apple's
+archived loginwindow docs predict for background processes), and whether the login-time spawn
+happens at all (#9 — RL-030 watched `bootstrap` register the job and never run it, `runs = 0`).
+**Setup:** LaunchAgent installed from the repo template, `plutil -lint` clean;
+`launchctl bootstrap` at ~18:01 local; the owner then performed a **full restart** (not a bare
+logout) at ~18:57 and logged back in at ~19:12. Read-only throughout; unit `off / standby`.
+macOS 26.5.2 (25F84). Host restored afterwards per ADR-0005 decision 5 — agent booted out,
+daemon stopped, plist removed.
+**Observation:**
+
+**1. `bootstrap` spawned the daemon by itself this time.** `runs = 1` within 8 s of the
+`bootstrap`, no `kickstart` — RL-030's silent `runs = 0` did **not** reproduce. Difference of
+record: today's GUI session was hours old; RL-030's was 26 days old.
+
+**2. The restart delivered SIGTERM and the handler ran to completion.** The pre-restart
+daemon's log ends:
+
+```
+18:57:03  status reader stopped (13302 packets, 13300 split, 3 rejected, 0 skipped while busy)
+18:57:03  BLE link dropped / disconnected / link connected -> stopped
+          SIGTERM received — releasing the link.
+          Link released — the vendor app can connect again.
+```
+
+(The `print` lines trail the logger lines in the file because stdout is block-buffered off-tty
+and flushes at exit; the interleaving is buffering, not causality.) The OS-initiated shutdown
+path — the exact case #16 was filed about — is graceful.
+
+**3. Login spawned the daemon unattended.** After the reboot, `RunAtLoad` ran the launcher with
+nobody touching anything: `uv` up at 19:12:30, Python at 19:12:46, **connected on attempt 1 in
+~1 s**, serving state. This was RL-030's "only thing standing between this and an unattended
+daemon," and #9's central question.
+
+**4. The `application.*` label survived the reboot unchanged.**
+`application.local.bedjet.daemon.787189186.787189193` — identical numeric components across at
+least three launches *and* a reboot on this host. RL-031's "per-launch ASN components" framing
+was wrong; treat the components as opaque and undocumented — the discovery step stands, the
+volatility claim does not.
+
+**5. The restore produced a second graceful `bootout` confirmation** — 3653 packets, **3653
+split** (a 100 %-split run), 0 rejected — then `Link released`, plist removed, device free.
+
+**6. Incidental catches from ~75 minutes connected:** an unhandled `InvalidStateError` out of
+bleak's `PeripheralDelegate.did_update_value_for_characteristic` at 18:17:43, mid-idle on a
+healthy link — the first in-the-field reproduction of #6; and the RL-017 checksum guard
+rejected a corrupt packet (`sums to 0x60`) at 18:56:24. Split totals for #2 this session:
+13300/13302, 3653/3653, 207/208.
+
+**Interpretation:** **Unattended operation's whole loop is now measured**: automatic start at
+login with the grant held, and a graceful release on OS-initiated restart. #16's operational
+claim is met on the dominant automated path. The one unmeasured teardown variant is a logout
+*without* a shutdown — and RL-032 bounds its worst case at ~3 s of vendor-app delay, so it no
+longer gates anything. #9's spawn question is answered yes; the `runs = 0` anomaly stands as
+observed-once-unreproduced, with the stale-GUI-session hypothesis on record (n = 1 each way).
+**Confidence:** high for 2, 3, 5 (direct observation); medium for the `runs = 0` hypothesis.
+**Provenance:** ✅ VERIFIED (our host and our device)
+**Fixture:** —
+**Next question:** none blocking. Optional, if ever convenient: a pure logout without restart;
+and #9 item 4's TCC half (does an identical-cdhash rebuild keep the grant) before any rebuild
+precedes an unattended start.
