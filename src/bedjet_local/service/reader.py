@@ -59,6 +59,17 @@ log = logging.getLogger(__name__)
 
 StateCallback = Callable[[BedJetState, StatusPacket], None]
 
+#: Upper bound on one follow-up read. Bleak's CoreBluetooth backend gives a read 20 s —
+#: hardcoded — and the transport holds its one-GATT-operation lock for the read's whole
+#: life, so a read that will never resolve stalls every command write behind it for those
+#: 20 s. The device re-sends within about a second, so abandoning a slow follow-up costs
+#: one packet interval. This also bounds the discriminator's one new failure direction:
+#: if a future firmware ever served a read that *begins* a packet, the value would be
+#: routed to the notify path and the read would sit unresolved. RL-034 says that cannot
+#: happen today (303/303 reads serve the remainder window); this makes "today" a bounded
+#: bet instead of a load-bearing one.
+_FOLLOW_UP_READ_TIMEOUT_S = 5.0
+
 
 class StatusReader:
     """Acquires status packets — by subscription or by polling — and publishes decoded,
@@ -353,7 +364,9 @@ class StatusReader:
 
     async def _complete_partial(self, first: bytes) -> None:
         try:
-            remainder = await self._transport.read(STATUS_UUID)
+            remainder = await asyncio.wait_for(
+                self._transport.read(STATUS_UUID), timeout=_FOLLOW_UP_READ_TIMEOUT_S
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -365,6 +378,11 @@ class StatusReader:
             else:
                 log.debug("follow-up read failed: %s", exc)
             return
+        # Publication order can briefly invert here: a *whole* notification arriving while
+        # this read was pending has already published newer state, and this reassembled
+        # packet is older. 7 of 17,982 packets arrive whole, the inversion corrects on the
+        # next packet (~1 s), and the pre-#6 behavior corrupted both values in this window
+        # instead — accepted, not accidental.
         self._publish(decode_status(reassemble(first, remainder)))
 
     # ── both modes ──────────────────────────────────────────────────────────────────────
