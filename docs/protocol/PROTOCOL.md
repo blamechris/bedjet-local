@@ -214,20 +214,22 @@ plausible-looking wrong mode is worse than an admitted unknown on a device that 
 Rapid notifications while the unit is **on**; near-silent while **off** (📖 UPSTREAM). Status
 arrives split: a notification carrying part of the packet, completed by an explicit read of the
 same characteristic. ✅ VERIFIED — 55 notifications in ~60 s, each reassembling to the declared
-31 bytes. The split is the norm, not an edge case: **17,975 of 17,982 packets (99.96 %) across
-five runs** needed the follow-up read (RL-026, RL-030, RL-031, RL-033), including one
+31 bytes. The split is the norm, not an edge case: **18,027 of 18,034 packets (99.96 %) across
+six runs** needed the follow-up read (RL-026, RL-030, RL-031, RL-033, RL-035), including one
 100 %-split run of ~20 minutes.
 
-### Read behaviour ❓
+### Read behaviour ✅
 
-The follow-up read returns the **remainder** of the notified packet, without a repeated header
-(✅ VERIFIED, RL-012) — so the firmware serves reads through some cursor, not as a plain
-characteristic value. What a **cold** read returns — one with no notification pending — has
-never been observed on our device. ❓ HYPOTHESIS: it returns a whole 31-byte packet, which
-would make polling viable and delete the reassembly path (#2). The reader's poll mode
-(`bedjet watch --poll 1`) is the instrumented experiment: its exit summary classifies every
-read (whole / partial / alien) and reports the read round-trip time, which is the latency
-number a poll interval has to be chosen against.
+A read of `…2000` returns **bytes [20:31) of the current status packet — always**, whether or
+not a notification is pending. The "follow-up read" that completes a split notification
+(✅ VERIFIED, RL-012) works because notify carries [0:20) and the read handler serves the rest
+by design — not because a cursor advanced: 303 of 303 **cold** reads across two poll-mode runs
+returned the same pinned 11-byte window, ten bytes byte-identical to the RL-002 fixture's
+[20:30) under different fan/target settings, with only the final (checksum) byte moving in
+step with the head's 1 Hz countdown (✅ VERIFIED, RL-034). The window is live but can never
+contain the offset-1 format magic `0x56`, so a read can never begin a packet: **polling for
+whole status packets is impossible on this firmware**, and #2 is closed as disproven. Read
+RTT, for the record: min/mean/max 46/57/125 ms at 1 Hz (RL-034).
 
 ## Commands — characteristic `…2004`, write
 
