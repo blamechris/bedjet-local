@@ -150,7 +150,10 @@ async def test_adapter_power_on_cuts_the_backoff_short() -> None:
             if transport.connect_attempts >= 2:
                 break
         assert transport.connect_attempts >= 2, "the first reconnect attempt should have run"
-        assert session.link is LinkState.LOST
+        # Via the snapshot rather than `session.link is LinkState.LOST`: mypy narrows the
+        # property to that literal and then rejects the CONNECTED comparisons below as
+        # non-overlapping, not knowing the supervisor mutates it.
+        assert session.snapshot().available is False
 
         transport.power_on_adapter()
         for _ in range(200):
