@@ -565,7 +565,11 @@ async def cmd_temp(args: argparse.Namespace) -> int:
     return 0
 
 
-_SHUTDOWN_GRACE_S = 10.0
+#: 📖 EXTERNAL: on the OS-shutdown path, XNU's proc_shutdown() (apple-oss-distributions/xnu,
+#: bsd/kern/kern_shutdown.c) sends SIGTERM and waits only ~3 s before its SIGKILL pass, so a
+#: grace above that is a promise the kernel will not let us keep. Measured releases finish in
+#: under a second (RL-030, RL-031); 2.5 s keeps headroom inside the kernel's window.
+_SHUTDOWN_GRACE_S = 2.5
 
 
 @contextlib.asynccontextmanager
@@ -606,9 +610,13 @@ async def _stop_signals() -> AsyncIterator[asyncio.Event]:
 async def _release(*closers: Callable[[], Awaitable[object]]) -> None:
     """Run the shutdown steps, and never take longer than the grace period doing it.
 
-    A supervisor that sent SIGTERM sends SIGKILL shortly after — launchd's default is 20
-    seconds — so a graceful release that hangs is strictly worse than an abrupt one: it
-    burns the window and gets killed anyway, having reported nothing. Bounding it keeps the
+    A supervisor that sent SIGTERM sends SIGKILL shortly after, so a graceful release that
+    hangs is strictly worse than an abrupt one: it burns the window and gets killed anyway,
+    having reported nothing. How short that window is is 📖 EXTERNAL, not measured here:
+    launchd's ExitTimeOut default is "system-defined" (`man 5 launchd.plist` — the 20 s
+    figure circulating in writeups is not in the man page), and on an OS shutdown XNU's
+    proc_shutdown() waits only ~3 s between SIGTERM and SIGKILL. The grace is sized for
+    the tighter kernel budget — see _SHUTDOWN_GRACE_S. Bounding the release keeps the
     ordinary case clean without betting the shutdown on a BLE call that may never return.
     """
     try:
@@ -617,7 +625,7 @@ async def _release(*closers: Callable[[], Awaitable[object]]) -> None:
                 await close()
     except TimeoutError:
         print(
-            f"\n⚠️  Shutdown exceeded {_SHUTDOWN_GRACE_S:.0f}s and was abandoned. The OS "
+            f"\n⚠️  Shutdown exceeded {_SHUTDOWN_GRACE_S:g}s and was abandoned. The OS "
             "releases the link when this process exits, but the device was not told."
         )
         return
