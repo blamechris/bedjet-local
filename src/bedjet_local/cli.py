@@ -625,7 +625,7 @@ async def _release(*closers: Callable[[], Awaitable[object]]) -> None:
                 await close()
     except TimeoutError:
         print(
-            f"\n⚠️  Shutdown exceeded {_SHUTDOWN_GRACE_S:.0f}s and was abandoned. The OS "
+            f"\n⚠️  Shutdown exceeded {_SHUTDOWN_GRACE_S:g}s and was abandoned. The OS "
             "releases the link when this process exits, but the device was not told."
         )
         return
