@@ -19,7 +19,7 @@ import signal
 
 import pytest
 
-from bedjet_local.cli import _release, _stop_signals
+from bedjet_local.cli import _SHUTDOWN_GRACE_S, _release, _stop_signals
 
 
 async def test_sigterm_reaches_the_event_loop() -> None:
@@ -45,6 +45,17 @@ async def test_handlers_are_removed_on_exit() -> None:
     assert loop.remove_signal_handler(signal.SIGINT) is False
 
 
+def test_the_grace_fits_inside_the_kernels_shutdown_window() -> None:
+    """XNU's shutdown pass SIGKILLs ~3 s after SIGTERM (#19, externally sourced).
+
+    A grace above that is a promise the kernel will not let us keep: on the one shutdown
+    path with nobody watching, the process dies mid-release having reported nothing —
+    precisely the outcome the bound exists to avoid. Measured releases finish in under a
+    second (RL-030, RL-031), so headroom costs nothing.
+    """
+    assert _SHUTDOWN_GRACE_S < 3.0
+
+
 async def test_release_runs_every_closer_in_order() -> None:
     order: list[str] = []
 
@@ -63,8 +74,9 @@ async def test_release_is_bounded_when_a_closer_hangs(
 ) -> None:
     """A graceful release that hangs is worse than an abrupt one: SIGKILL is coming anyway.
 
-    launchd follows SIGTERM with SIGKILL after ~20s, so an unbounded disconnect burns the
-    whole window and still dies — having released nothing and reported nothing.
+    On an OS shutdown the kernel waits only ~3 s between SIGTERM and SIGKILL (#19), so an
+    unbounded disconnect burns the whole window and still dies — having released nothing
+    and reported nothing.
     """
     monkeypatch.setattr("bedjet_local.cli._SHUTDOWN_GRACE_S", 0.05)
     reached = False
