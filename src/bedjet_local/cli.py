@@ -413,11 +413,14 @@ async def cmd_fan(args: argparse.Namespace) -> int:
             return 0
 
         if not args.yes:
-            payload = encode.set_fan_percent(args.percent)
-            print(
-                f"\n⚠️  This writes to the device. About to send: {payload.hex(' ')}  "
-                f"(fan -> {args.percent}%)"
-            )
+            # The prompt must announce the snapped value: the user confirms what the wire
+            # will carry, not what they typed (#23).
+            snapped = encode.snap_fan_percent(args.percent)
+            payload = encode.set_fan_percent(snapped)
+            asked = f"fan -> {snapped}%"
+            if snapped != args.percent:
+                asked = f"fan {args.percent}% -> {snapped}% on the 5% grid"
+            print(f"\n⚠️  This writes to the device. About to send: {payload.hex(' ')}  ({asked})")
             print("    The unit must be running, and you should be able to hear the change.")
             if input("\n    Type 'fan' to send, anything else to abort: ").strip() != "fan":
                 print("aborted — nothing was sent.")

@@ -32,6 +32,7 @@ from enum import IntEnum
 from typing import Final
 
 from .constants import (
+    FAN_PERCENT_BASE,
     FAN_PERCENT_STEP,
     FAN_STEP_MAX,
     FAN_STEP_MIN,
@@ -96,9 +97,23 @@ def set_fan_step(step: int) -> bytes:
     return bytes([OPCODE_FAN, step])
 
 
-#: The device supports 5-100% in 5% steps. ✅ VERIFIED mapping (RL-002).
-FAN_PERCENT_MIN: Final = 5
-FAN_PERCENT_MAX: Final = 100
+#: The device supports 5-100% in 5% steps — derived from the ✅ VERIFIED mapping (RL-002)
+#: rather than restated, so the grid cannot drift from ``fan_step_to_percent``.
+FAN_PERCENT_MIN: Final = FAN_PERCENT_BASE
+FAN_PERCENT_MAX: Final = FAN_PERCENT_BASE + FAN_STEP_MAX * FAN_PERCENT_STEP
+
+
+def _check_fan_percent(percent: int) -> None:
+    """Reject out-of-range rather than snapping inward — rationale on ``snap_fan_percent``."""
+    if not FAN_PERCENT_MIN <= percent <= FAN_PERCENT_MAX:
+        raise CommandError(
+            f"fan {percent}% is outside the supported {FAN_PERCENT_MIN}-{FAN_PERCENT_MAX}% range"
+        )
+
+
+def _fan_percent_to_step(percent: int) -> int:
+    """Nearest step index for an in-range percent. Inverse of ``fan_step_to_percent``."""
+    return round((percent - FAN_PERCENT_MIN) / FAN_PERCENT_STEP)
 
 
 def snap_fan_percent(percent: int) -> int:
@@ -109,24 +124,17 @@ def snap_fan_percent(percent: int) -> int:
     fine. On a device with physical effects, an out-of-range request is a bug worth
     surfacing, not smoothing over.
 
-    Callers that verify the effect must verify against this value, not the raw request —
-    the device reports the snapped speed, so the raw value never matches (#23).
+    Anything that verifies, displays, or reports the request must use this value, not the
+    raw one — the device adopts and reports the snapped speed (#23).
     """
-    if not FAN_PERCENT_MIN <= percent <= FAN_PERCENT_MAX:
-        raise CommandError(
-            f"fan {percent}% is outside the supported {FAN_PERCENT_MIN}-{FAN_PERCENT_MAX}% range"
-        )
+    _check_fan_percent(percent)
     return fan_step_to_percent(_fan_percent_to_step(percent))
-
-
-def _fan_percent_to_step(percent: int) -> int:
-    """Nearest step index for an in-range percent. Inverse of ``fan_step_to_percent``."""
-    return round((percent - FAN_PERCENT_MIN) / FAN_PERCENT_STEP)
 
 
 def set_fan_percent(percent: int) -> bytes:
     """Set fan speed by percentage, snapped to the nearest supported 5% step."""
-    return set_fan_step(_fan_percent_to_step(snap_fan_percent(percent)))
+    _check_fan_percent(percent)
+    return set_fan_step(_fan_percent_to_step(percent))
 
 
 def set_temperature(

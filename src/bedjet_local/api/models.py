@@ -24,7 +24,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..device.state import BedJetState
-from ..protocol.constants import ABSOLUTE_MAX_C, ABSOLUTE_MIN_C, TEMP_SCALE, c_to_f
+from ..protocol.constants import (
+    ABSOLUTE_MAX_C,
+    ABSOLUTE_MIN_C,
+    FAN_PERCENT_STEP,
+    TEMP_SCALE,
+    c_to_f,
+)
+from ..protocol.encode import FAN_PERCENT_MAX, FAN_PERCENT_MIN
 from ..service.session import SessionSnapshot
 
 
@@ -203,10 +210,8 @@ class Capabilities:
         }
 
 
-#: Fan percentages the device accepts: ``5 + 5 * step`` for steps 0-19 (RL-002).
-FAN_PERCENT_MIN = 5
-FAN_PERCENT_MAX = 100
-FAN_PERCENT_STEP = 5
+#: Fan percentages the device accepts: re-exported from the protocol layer's derivation of
+#: the RL-002 grid, so this copy cannot drift from the one that builds the wire bytes.
 
 #: Wire granularity for a target temperature: the byte is 2 x degrees Celsius (RL-001).
 TEMPERATURE_STEP_C = 1.0 / TEMP_SCALE

@@ -187,10 +187,19 @@ class BedJetAPI:
         )
 
     async def set_fan(self, percent: int, *, dry_run: bool = False) -> CommandOutcome:
-        """Set fan speed, snapped to the device's 5% steps."""
+        """Set fan speed, snapped to the device's 5% steps.
+
+        Snapped here, before the description is built: every detail string must name the
+        percent the device will actually adopt, or the outcome contradicts the contract's
+        own guidance about off-grid requests (#23).
+        """
+        try:
+            snapped = encode.snap_fan_percent(percent)
+        except encode.CommandError as exc:
+            raise Refused(str(exc)) from exc
         return await self._command(
-            lambda: self._session.commander.set_fan_percent(percent, dry_run=dry_run),
-            description=f"fan {percent}%",
+            lambda: self._session.commander.set_fan_percent(snapped, dry_run=dry_run),
+            description=f"fan {snapped}%",
             dry_run=dry_run,
         )
 
