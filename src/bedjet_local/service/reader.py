@@ -99,6 +99,7 @@ class StatusReader:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._completion: asyncio.Task[None] | None = None
         self._poll_task: asyncio.Task[None] | None = None
+        self._running = False
         self._poke = asyncio.Event()
         self._last_anomalies: tuple[str, ...] | None = None
         self._logged_split_notice = False
@@ -165,6 +166,7 @@ class StatusReader:
             # connection as a phantom immediate read.
             self._poke.clear()
             self._poll_task = self._loop.create_task(self._poll_loop())
+            self._running = True
             log.info(
                 "status reader started (polling a whole read every %.2fs — #2 experiment)",
                 self._poll_interval,
@@ -179,9 +181,19 @@ class StatusReader:
         await self._transport.subscribe(
             STATUS_UUID, self._on_notify, notification_discriminator=looks_like_packet_start
         )
+        self._running = True
         log.info("status reader started")
 
     async def stop(self) -> None:
+        # The session tears down before every reconnect attempt, so a long outage calls
+        # stop() once per backoff tick against a reader that never restarted in between.
+        # The final-stats line must mark a running → stopped transition — repeated, it
+        # reads as a reader that kept running and re-stopping (#30). Skipping the whole
+        # body is safe: everything below releases what start(), or traffic after it,
+        # created.
+        if not self._running:
+            return
+        self._running = False
         if self._poll_interval is not None:
             if self._poll_task is not None:
                 task, self._poll_task = self._poll_task, None
