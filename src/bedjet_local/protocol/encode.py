@@ -37,6 +37,7 @@ from .constants import (
     FAN_STEP_MIN,
     TEMP_SCALE,
     CommandMode,
+    fan_step_to_percent,
 )
 
 #: Command opcodes, operands of a write to the command characteristic.
@@ -100,19 +101,32 @@ FAN_PERCENT_MIN: Final = 5
 FAN_PERCENT_MAX: Final = 100
 
 
-def set_fan_percent(percent: int) -> bytes:
-    """Set fan speed by percentage, snapped to the nearest supported 5% step.
+def snap_fan_percent(percent: int) -> int:
+    """The percent the device will actually adopt: ``percent`` on the nearest 5% step.
 
     Values outside 5-100% are rejected rather than snapped inward. Rounding 4% up to 5% is
     harmless; accepting 200% and quietly sending 100% teaches the caller that its input was
     fine. On a device with physical effects, an out-of-range request is a bug worth
     surfacing, not smoothing over.
+
+    Callers that verify the effect must verify against this value, not the raw request —
+    the device reports the snapped speed, so the raw value never matches (#23).
     """
     if not FAN_PERCENT_MIN <= percent <= FAN_PERCENT_MAX:
         raise CommandError(
             f"fan {percent}% is outside the supported {FAN_PERCENT_MIN}-{FAN_PERCENT_MAX}% range"
         )
-    return set_fan_step(round((percent - FAN_PERCENT_MIN) / FAN_PERCENT_STEP))
+    return fan_step_to_percent(_fan_percent_to_step(percent))
+
+
+def _fan_percent_to_step(percent: int) -> int:
+    """Nearest step index for an in-range percent. Inverse of ``fan_step_to_percent``."""
+    return round((percent - FAN_PERCENT_MIN) / FAN_PERCENT_STEP)
+
+
+def set_fan_percent(percent: int) -> bytes:
+    """Set fan speed by percentage, snapped to the nearest supported 5% step."""
+    return set_fan_step(_fan_percent_to_step(snap_fan_percent(percent)))
 
 
 def set_temperature(

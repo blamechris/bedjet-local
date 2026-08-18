@@ -392,6 +392,11 @@ class Commander:
 
         Refuses unless the unit is running: fan speed on a standby unit is not observable
         (the byte holds its last-set value regardless — RL-013).
+
+        The wire has 5% granularity, so the value actually sent may differ from the one
+        requested. As with temperature, the snapped value is what gets verified and what
+        the command description reports — verifying the raw request would report
+        unverified for a command the device obeyed (#23).
         """
         before_state, _ = await self.wait_for_state(self._settle_timeout)
         if before_state.power is not Power.ON:
@@ -400,9 +405,10 @@ class Commander:
                 "byte holds its last-set value in standby (RL-013). Start it in Cool from "
                 "the vendor app, close the app, and retry."
             )
+        snapped = encode.snap_fan_percent(percent)
         return await self._send_verified(
-            encode.set_fan_percent(percent),
-            description=f"fan -> {percent}%",
-            satisfied=lambda state: state.fan_percent == percent,
+            encode.set_fan_percent(snapped),
+            description=f"fan -> {snapped}%",
+            satisfied=lambda state: state.fan_percent == snapped,
             dry_run=dry_run,
         )

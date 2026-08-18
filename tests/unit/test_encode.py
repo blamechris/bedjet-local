@@ -55,6 +55,18 @@ def test_set_fan_percent_snaps_to_the_nearest_step() -> None:
     assert encode.set_fan_percent(52) == encode.set_fan_step(9)
 
 
+@pytest.mark.parametrize(("percent", "snapped"), [(5, 5), (52, 50), (53, 55), (100, 100)])
+def test_snap_fan_percent_names_the_value_the_device_will_adopt(percent: int, snapped: int) -> None:
+    """The verifier must compare against this, not the raw request (#23)."""
+    assert encode.snap_fan_percent(percent) == snapped
+
+
+@pytest.mark.parametrize("percent", [0, 4, 101, 200])
+def test_snap_fan_percent_rejects_rather_than_snapping_inward(percent: int) -> None:
+    with pytest.raises(encode.CommandError):
+        encode.snap_fan_percent(percent)
+
+
 @pytest.mark.parametrize("percent", [0, 4, 101, 200])
 def test_set_fan_percent_rejects_unsupported_values(percent: int) -> None:
     with pytest.raises(encode.CommandError):
