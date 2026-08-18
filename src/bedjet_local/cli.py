@@ -525,7 +525,9 @@ async def cmd_temp(args: argparse.Namespace) -> int:
                 f"({c_to_f(packet.min_temp_c):.0f}-{c_to_f(packet.max_temp_c):.0f}F)"
             )
 
-        rounded = round(celsius * 2) / 2
+        # The one derivation of the wire's granularity — a hand-written `round(c * 2) / 2`
+        # here is exactly the copy that drifts (#27).
+        rounded = encode.snap_target_c(celsius)
         if abs(rounded - celsius) > 0.01:
             print(
                 f"\nnote: {celsius:.2f}C rounds to {rounded:.1f}C "

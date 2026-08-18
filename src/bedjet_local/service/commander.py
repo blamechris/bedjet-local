@@ -33,7 +33,6 @@ from ..device.state import BedJetState, Power
 from ..protocol import encode
 from ..protocol.constants import (
     COMMAND_UUID,
-    TEMP_SCALE,
     CommandMode,
     StatusMode,
     c_to_f,
@@ -372,7 +371,7 @@ class Commander:
 
         # Round to the wire's granularity BEFORE validating, so the value we check is the
         # value we send.
-        rounded = round(celsius * TEMP_SCALE) / TEMP_SCALE
+        rounded = encode.snap_target_c(celsius)
         payload = encode.set_temperature(
             rounded, min_c=before_packet.min_temp_c, max_c=before_packet.max_temp_c
         )

@@ -137,6 +137,28 @@ def set_fan_percent(percent: int) -> bytes:
     return set_fan_step(_fan_percent_to_step(percent))
 
 
+def _target_raw(celsius: float) -> int:
+    """The wire byte for a target temperature: 0.5 °C granularity, one byte."""
+    raw = round(celsius * TEMP_SCALE)
+    if not 0 <= raw <= 0xFF:
+        raise CommandError(f"target {celsius:.1f}C does not fit in one byte")
+    return raw
+
+
+def snap_target_c(celsius: float) -> float:
+    """The target the device will actually be asked for: ``celsius`` on the wire's 0.5 °C grid.
+
+    Only the granularity is settled here. The permitted *range* is per-mode and the device
+    is the authority on it (RL-013), so that check lives in :func:`set_temperature` against
+    the device-reported bounds — this function rejects only values no wire byte can carry.
+
+    Anything that verifies, displays, or reports the request must use this value, not the
+    raw one — the rounded value is what gets sent and verified (#27, the fan's #23 one
+    command over).
+    """
+    return _target_raw(celsius) / TEMP_SCALE
+
+
 def set_temperature(
     celsius: float,
     *,
@@ -166,10 +188,7 @@ def set_temperature(
             f"target {celsius:.1f}C is outside the {min_c:.1f}-{max_c:.1f}C range the device "
             f"reports for its current mode"
         )
-    raw = round(celsius * TEMP_SCALE)
-    if not 0 <= raw <= 0xFF:
-        raise CommandError(f"target {celsius:.1f}C does not fit in one byte")
-    return bytes([OPCODE_TEMPERATURE, raw])
+    return bytes([OPCODE_TEMPERATURE, _target_raw(celsius)])
 
 
 def set_timer(hours: int, minutes: int, *, max_runtime_s: int | None = None) -> bytes:
