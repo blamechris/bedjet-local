@@ -193,6 +193,37 @@ async def test_set_fan_writes_the_fan_opcode_and_verifies() -> None:
     assert result.after.fan_percent == 100
 
 
+async def test_set_fan_verifies_an_off_grid_percent_against_the_snapped_value() -> None:
+    """#23: ask for 52, the wire carries the step for 50, the device obeys and reports 50.
+
+    Verifying against the raw 52 made this exact exchange report CommandUnverified — an
+    "the device may not have obeyed" message about a device that did what the encoder asked.
+    """
+    transport = MockTransport()
+    commander = await _armed(transport, build_status(mode=StatusMode.COOL, fan_step=19))
+
+    async def respond() -> None:
+        await asyncio.sleep(0)
+        transport.emit(STATUS_UUID, build_status(mode=StatusMode.COOL, fan_step=9))
+
+    task = asyncio.create_task(respond())
+    result = await commander.set_fan_percent(52)
+    await task
+
+    assert transport.writes == [(COMMAND_UUID, bytes([0x07, 9]))]
+    assert result.after.fan_percent == 50
+
+
+async def test_set_fan_refuses_an_off_grid_percent_whose_snapped_value_is_current() -> None:
+    """52 while running at 50 is a no-op after snapping, and the refusal should say so."""
+    transport = MockTransport()
+    commander = await _armed(transport, build_status(mode=StatusMode.COOL, fan_step=9))
+
+    with pytest.raises(CommandRefused, match="already satisfies 'fan -> 50%'"):
+        await commander.set_fan_percent(52)
+    assert transport.writes == []
+
+
 async def test_set_fan_refuses_when_the_unit_is_off() -> None:
     """RL-013: the fan byte holds its last-set value in standby, so a change is invisible."""
     transport = MockTransport()

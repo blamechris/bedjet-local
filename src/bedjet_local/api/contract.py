@@ -366,9 +366,10 @@ def agent_contract() -> dict[str, Any]:
                 ],
                 "guidance": (
                     "Refused unless the unit is running — the fan byte is unobservable "
-                    "in standby. Send a multiple of 5: an in-range value off the 5% "
-                    "grid is snapped on the wire but verified against the value you "
-                    "asked for, so it reports unverified even when the device obeyed. "
+                    "in standby. An in-range value off the 5% grid is snapped to the "
+                    "nearest step; the snapped value is what gets sent, verified, and "
+                    "reported in the command description, so read the result rather "
+                    "than assuming your raw request took effect. "
                     "And remember fan_is_stale when reading the result back: an idle "
                     "unit reports the last session's speed as a memory, not as airflow."
                 ),

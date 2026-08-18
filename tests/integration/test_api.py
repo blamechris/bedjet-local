@@ -173,6 +173,37 @@ async def test_an_out_of_range_target_is_refused_with_the_devices_own_bounds() -
     assert transport.writes == []
 
 
+async def test_fan_outcomes_report_the_snapped_percent_never_the_raw_request() -> None:
+    """#23 at the API surface: every detail names the percent the device will adopt.
+
+    The served contract promises the snapped value is what gets sent, verified, and
+    reported; a detail built from the raw request breaks that promise at the exact
+    surface the contract describes.
+    """
+    transport = MockTransport()
+    api = await _api(transport)
+
+    # RUNNING reports step 9, so 52 is already satisfied — after snapping, not before.
+    # This runs first: the verified 72% below moves the state off 50.
+    outcome = await api.set_fan(52)
+    assert outcome.changed is False
+    assert "already fan 50%" in outcome.detail
+    assert "52" not in outcome.detail
+
+    outcome = await api.set_fan(72, dry_run=True)
+    assert outcome.detail == "would send 07 0d for fan 70%; nothing was sent"
+
+    task = _respond_with(transport, build_status(mode=StatusMode.COOL, fan_step=13))
+    outcome = await api.set_fan(72)
+    await task
+    assert outcome.sent == "07 0d"
+    assert "fan 70%" in outcome.detail
+    assert "72" not in outcome.detail
+
+    with pytest.raises(Refused, match="outside the supported"):
+        await api.set_fan(104)
+
+
 async def test_commands_are_refused_outright_while_the_link_is_yielded() -> None:
     """A yield exists so the owner can take their heater back. Queueing commands against a
     link we have deliberately given away would defeat the point."""
