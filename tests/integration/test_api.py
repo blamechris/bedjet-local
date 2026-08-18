@@ -173,6 +173,39 @@ async def test_an_out_of_range_target_is_refused_with_the_devices_own_bounds() -
     assert transport.writes == []
 
 
+async def test_temperature_outcomes_report_the_rounded_target_never_the_raw_request() -> None:
+    """#27 at the API surface: every detail names the target the device will be asked for.
+
+    The fan's #23, one command over: the commander rounds to the wire's 0.5 °C granularity
+    and verifies the rounded value, so a detail built from the raw request describes a
+    target the device never saw.
+    """
+    transport = MockTransport()
+    api = await _api(transport)
+
+    # RUNNING reports byte 50 = 25.0C, so 25.2 is already satisfied — after rounding, not
+    # before. This runs first: the verified 22.5C below moves the state off 25.0.
+    outcome = await api.set_temperature(celsius=25.2)
+    assert outcome.changed is False
+    assert "already target 25.0C" in outcome.detail
+    assert "25.2" not in outcome.detail
+
+    outcome = await api.set_temperature(celsius=22.3, dry_run=True)
+    assert outcome.detail == "would send 03 2d for target 22.5C; nothing was sent"
+
+    task = _respond_with(transport, build_status(mode=StatusMode.COOL, target=45))
+    outcome = await api.set_temperature(celsius=22.3)
+    await task
+    assert outcome.sent == "03 2d"
+    assert "target 22.5C" in outcome.detail
+    assert "22.3" not in outcome.detail
+
+    # Unfittable values are refused before the commander is involved; range stays the
+    # device's call and is tested above with the device's own bounds in the message.
+    with pytest.raises(Refused, match="does not fit"):
+        await api.set_temperature(celsius=200.0)
+
+
 async def test_fan_outcomes_report_the_snapped_percent_never_the_raw_request() -> None:
     """#23 at the API surface: every detail names the percent the device will adopt.
 

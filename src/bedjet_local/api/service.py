@@ -176,13 +176,21 @@ class BedJetAPI:
         the authority on it (RL-013) — so the check happens against the live status packet,
         one layer down, and arrives back as a :class:`Refused` with the device's own bounds
         quoted in it.
+
+        The wire's 0.5 °C granularity *is* settled here, before the description is built:
+        every detail string must name the target the device will actually be asked for, not
+        the raw request (#27, the fan's #23 one command over).
         """
         if (celsius is None) == (fahrenheit is None):
             raise Refused("give exactly one of celsius or fahrenheit")
         target_c = celsius if celsius is not None else (fahrenheit - 32.0) * 5.0 / 9.0  # type: ignore[operator]
+        try:
+            snapped = encode.snap_target_c(target_c)
+        except encode.CommandError as exc:
+            raise Refused(str(exc)) from exc
         return await self._command(
-            lambda: self._session.commander.set_temperature(target_c, dry_run=dry_run),
-            description=f"target {target_c:.1f}C",
+            lambda: self._session.commander.set_temperature(snapped, dry_run=dry_run),
+            description=f"target {snapped:.1f}C",
             dry_run=dry_run,
         )
 

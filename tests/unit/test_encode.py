@@ -112,6 +112,23 @@ def test_set_temperature_raises_rather_than_clamping() -> None:
         encode.set_temperature(40.0, min_c=19.0, max_c=26.0)
 
 
+@pytest.mark.parametrize(
+    ("celsius", "snapped"), [(22.0, 22.0), (22.2, 22.0), (22.3, 22.5), (25.24, 25.0)]
+)
+def test_snap_target_c_names_the_value_the_device_will_be_asked_for(
+    celsius: float, snapped: float
+) -> None:
+    """The verifier and every detail string must use this, not the raw request (#27)."""
+    assert encode.snap_target_c(celsius) == snapped
+
+
+@pytest.mark.parametrize("celsius", [-1.0, 128.0])
+def test_snap_target_c_rejects_what_no_wire_byte_can_carry(celsius: float) -> None:
+    """Range stays the device's call (RL-013); only byte-fit is rejected here."""
+    with pytest.raises(encode.CommandError, match="does not fit"):
+        encode.snap_target_c(celsius)
+
+
 # ── Timer ───────────────────────────────────────────────────────────────────────────────
 
 
