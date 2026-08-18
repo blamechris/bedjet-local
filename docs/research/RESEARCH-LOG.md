@@ -1945,3 +1945,44 @@ post-power-on reconnect is asserted from the attempt starting, not finishing (SI
 **Fixture:** —
 **Next question:** none for #20/#29. Tonight's remaining open code question is #6's targeted
 fix (see RL-034).
+
+---
+
+## RL-036 — Eight quiet hours: the notification discriminator survives an overnight soak
+
+**Date:** 2026-08-18
+**Question:** #6's close criteria: does PR #33's notification discriminator (744eef0) hold
+over a soak window long enough that the pre-fix rate — ~1 occurrence per ~25 min of connected
+time (RL-033 §6, and #6's own record) — would have produced many `InvalidStateError`s?
+**Setup:** `bedjet serve` in notification mode (the default — the path #6 rides), started from
+the owner's Terminal at 23:59:39 2026-08-17 local, log teed to `~/Library/Logs/bedjet-soak.log`.
+Unit off/standby throughout. Measurement window closed 08:06:27 2026-08-18; the daemon was left
+running.
+**Observation:**
+
+1. **Zero occurrences of the #6 shape over the full window:** a grep for
+   `did_update_value_for_characteristic` / `InvalidStateError` over the whole log returns
+   nothing.
+2. The window is one unbroken connection: `connecting -> connected` at 23:59:41 and no
+   disconnect, reconnect, or reader-stop line after it — **8 h 06 m 46 s of continuous
+   connected time**.
+3. The link was live throughout, not merely open: `GET /api/v1/state` reported
+   `reading_age_s: 0.2` at both spot checks (~01:05 and 08:06), and the reader announced the
+   split-then-read shape at startup (`status packets arrive split (20 of 31 bytes)`) — so the
+   exposure path (99.96 % of packets, RL-035) carried traffic the entire window.
+4. Expected occurrences at the pre-fix rate over 487 min: **~19.5**. P(zero by luck) ≈
+   e^−19.5 ≈ 3×10⁻⁹. This is confirmation, not absence of evidence.
+5. Incidental: the RL-017 checksum guard discarded two corrupt packets (00:36:41, sums to
+   0xff; 00:37:04, sums to 0x01) — the class RL-033 §6 caught once in ~75 min. Small numbers
+   on both sides; consistent with baseline, no action.
+
+**Interpretation:** #6's fix is confirmed in the field: the discriminator routes packet-starts
+away from the pending follow-up read for eight hours of the exact traffic that previously
+produced the crash roughly every 25 minutes. This entry is the evidence #6's close comment
+called for; #6 closes on it.
+**Confidence:** high (direct observation over the full window; both close criteria — zero
+error lines and verified connected time — measured, not inferred).
+**Provenance:** ✅ VERIFIED (our host and our device)
+**Fixture:** —
+**Next question:** none open in the tracker. RL-033's optional launchd follow-ups (pure
+logout; the TCC cdhash rebuild question) remain optional and unqueued.
