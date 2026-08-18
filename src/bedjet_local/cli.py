@@ -383,8 +383,8 @@ async def cmd_off(args: argparse.Namespace) -> int:
     print(f"    sent:   {result.payload.hex(' ')}")
     print(f"    before: {result.before.describe()}")
     print(f"    after:  {result.after.describe()}")
-    print("\nThe OFF command is now VERIFIED on our hardware rather than upstream guesswork.")
-    print("Record it in docs/research/RESEARCH-LOG.md and promote the row in PROTOCOL.md.")
+    print("\nThe OFF command was hardware-verified on this run. If its PROTOCOL.md row is")
+    print("not already ✅ VERIFIED, record a research-log entry and promote the row.")
     if args.save:
         args.save.write_bytes(result.after_packet.raw)
         print(f"Saved the post-command packet to {args.save}")
@@ -442,7 +442,10 @@ async def cmd_fan(args: argparse.Namespace) -> int:
     print(f"    sent:   {result.payload.hex(' ')}")
     print(f"    before: {result.before.describe()}")
     print(f"    after:  {result.after.describe()}")
-    print("\nOpcode 0x07 is now VERIFIED. Record it in docs/research/RESEARCH-LOG.md.")
+    print(
+        "\nOpcode 0x07 was hardware-verified on this run. If docs/research/RESEARCH-LOG.md"
+        "\ndoes not already record it, add an entry."
+    )
     return 0
 
 
@@ -495,9 +498,10 @@ async def cmd_mode(args: argparse.Namespace) -> int:
     print(f"    before: {result.before.describe()}")
     print(f"    after:  {result.after.describe()}")
     print(
-        f"\nCommand mode {mode.name} (0x{int(mode):02x}) is now VERIFIED — and note it "
-        f"produced\nstatus mode {result.after.mode.name if result.after.mode else '?'}, a "
-        f"different value. Record it in the research log."
+        f"\nCommand mode {mode.name} (0x{int(mode):02x}) was hardware-verified on this run "
+        f"— and note it produced\nstatus mode "
+        f"{result.after.mode.name if result.after.mode else '?'}, a different value. If "
+        f"PROTOCOL.md's row is not\nalready ✅ VERIFIED, record it with a research-log entry."
     )
     return 0
 
