@@ -132,6 +132,9 @@ class Commander:
             opening a *second* subscription to the same characteristic — which would put
             two follow-up reads in flight against one handle, the precise collision that
             produced the corrupt fragment in RL-017.
+        poll_interval: passed to the reader. ``None`` (the default) keeps the verified
+            notification path; a value selects whole-packet polling (#2 — hypothesis
+            until measured on hardware).
     """
 
     def __init__(
@@ -140,13 +143,14 @@ class Commander:
         *,
         settle_timeout: float = 10.0,
         on_state: StateCallback | None = None,
+        poll_interval: float | None = None,
     ) -> None:
         self._transport = transport
         self._settle_timeout = settle_timeout
         self._observer = on_state
         self._latest: tuple[BedJetState, StatusPacket] | None = None
         self._updated = asyncio.Event()
-        self._reader = StatusReader(transport, self._on_state)
+        self._reader = StatusReader(transport, self._on_state, poll_interval=poll_interval)
 
     @property
     def reader(self) -> StatusReader:
@@ -242,12 +246,21 @@ class Commander:
         # response=None: the transport picks the write type from the characteristic's own
         # properties. Pinning it wrong is how RL-018 threw every command away.
         await self._transport.write(COMMAND_UUID, payload)
+        # In poll mode this pulls the next read forward so verification sees the device's
+        # reaction in one round-trip rather than at the next tick; under notifications it
+        # is a no-op, since the device announces its own changes.
+        self._reader.poke()
 
         deadline = asyncio.get_running_loop().time() + self._settle_timeout
         while asyncio.get_running_loop().time() < deadline:
             try:
                 await asyncio.wait_for(self._updated.wait(), timeout=0.5)
             except TimeoutError:
+                # A quiet half-second while a command settles is worth a fresh sample:
+                # the device is not obliged to reflect a command within one read, and a
+                # poll interval longer than the settle window would otherwise report a
+                # command the device obeyed as unverified. No-op under notifications.
+                self._reader.poke()
                 continue
             self._updated.clear()
             assert self._latest is not None

@@ -108,6 +108,8 @@ class DeviceSession:
         supervise_interval: how often to check the link. The BLE stack notices a drop on
             its own; this only decides how quickly we react to it.
         stale_after_s: age at which a reading is reported stale.
+        poll_interval: seconds between whole-packet status reads instead of the verified
+            notification path (#2 experiment). ``None``, the default, means notifications.
     """
 
     def __init__(
@@ -121,6 +123,7 @@ class DeviceSession:
         backoff_max: float = 60.0,
         supervise_interval: float = 1.0,
         stale_after_s: float = DEFAULT_STALE_AFTER_S,
+        poll_interval: float | None = None,
     ) -> None:
         self._transport = transport
         self._address = address
@@ -132,7 +135,10 @@ class DeviceSession:
         self._stale_after_s = stale_after_s
 
         self._commander = Commander(
-            transport, settle_timeout=settle_timeout, on_state=self._on_state
+            transport,
+            settle_timeout=settle_timeout,
+            on_state=self._on_state,
+            poll_interval=poll_interval,
         )
         self._link = LinkState.STOPPED
         self._reading: BedJetState | None = None

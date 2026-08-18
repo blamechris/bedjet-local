@@ -214,7 +214,20 @@ plausible-looking wrong mode is worse than an admitted unknown on a device that 
 Rapid notifications while the unit is **on**; near-silent while **off** (📖 UPSTREAM). Status
 arrives split: a notification carrying part of the packet, completed by an explicit read of the
 same characteristic. ✅ VERIFIED — 55 notifications in ~60 s, each reassembling to the declared
-31 bytes.
+31 bytes. The split is the norm, not an edge case: **17,975 of 17,982 packets (99.96 %) across
+five runs** needed the follow-up read (RL-026, RL-030, RL-031, RL-033), including one
+100 %-split run of ~20 minutes.
+
+### Read behaviour ❓
+
+The follow-up read returns the **remainder** of the notified packet, without a repeated header
+(✅ VERIFIED, RL-012) — so the firmware serves reads through some cursor, not as a plain
+characteristic value. What a **cold** read returns — one with no notification pending — has
+never been observed on our device. ❓ HYPOTHESIS: it returns a whole 31-byte packet, which
+would make polling viable and delete the reassembly path (#2). The reader's poll mode
+(`bedjet watch --poll 1`) is the instrumented experiment: its exit summary classifies every
+read (whole / partial / alien) and reports the read round-trip time, which is the latency
+number a poll interval has to be chosen against.
 
 ## Commands — characteristic `…2004`, write
 
