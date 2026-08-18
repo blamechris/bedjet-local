@@ -243,7 +243,11 @@ class BedJetAPI:
         except CommandUnverified as exc:
             raise Unverified(str(exc)) from exc
         except TransportError as exc:
-            raise Unavailable(f"the link failed mid-command: {exc}") from exc
+            # Only failures from before the write can surface here: the commander converts
+            # a TransportError raised at or after the write into CommandUnverified, so
+            # "unavailable" keeps meaning what the served contract asserts — nothing was
+            # sent. Kept as defence in depth for any future pre-write transport call.
+            raise Unavailable(f"the link failed before anything was sent: {exc}") from exc
 
         return CommandOutcome(
             ok=True,

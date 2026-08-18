@@ -30,8 +30,9 @@ import ipaddress
 import json
 import logging
 import secrets
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 from aiohttp import WSMsgType, web
@@ -44,6 +45,7 @@ from ..api import (
     Refused,
     Unavailable,
     Unverified,
+    agent_contract,
 )
 
 log = logging.getLogger(__name__)
@@ -53,6 +55,19 @@ log = logging.getLogger(__name__)
 LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
 API_PREFIX = "/api/v1"
+
+#: How the API's three failure modes leave this transport. One mapping, used both to
+#: translate the exceptions in ``guard`` and to describe itself in the served contract —
+#: so the number an agent is told to expect is the number the middleware produces, by
+#: construction. 409 refused / 503 unavailable / 502 unverified; the reasoning for keeping
+#: them distinct is ADR-0004 decision 4.
+FAILURE_MODE_STATUS: Mapping[str, int] = MappingProxyType(
+    {
+        "refused": 409,
+        "unavailable": 503,
+        "unverified": 502,
+    }
+)
 
 _API_KEY = web.AppKey[BedJetAPI]("bedjet_api")
 _CONFIG_KEY = web.AppKey["ServerConfig"]("bedjet_config")
@@ -201,13 +216,13 @@ async def guard(
     try:
         return await handler(request)
     except Unavailable as exc:
-        return _error("unavailable", str(exc), 503)
+        return _error("unavailable", str(exc), FAILURE_MODE_STATUS["unavailable"])
     except Unverified as exc:
         # 502, deliberately: something downstream of us did not answer for itself. This is
         # the response an operator must not be able to confuse with a refusal.
-        return _error("unverified", str(exc), 502)
+        return _error("unverified", str(exc), FAILURE_MODE_STATUS["unverified"])
     except Refused as exc:
-        return _error("refused", str(exc), 409)
+        return _error("refused", str(exc), FAILURE_MODE_STATUS["refused"])
     except ApiError as exc:  # pragma: no cover - defensive
         return _error("error", str(exc), 500)
 
@@ -264,6 +279,56 @@ async def handle_health(_request: web.Request) -> web.Response:
     """Liveness only. Deliberately says nothing about the device: this is the one route
     that answers without a credential."""
     return _json({"status": "ok"})
+
+
+async def handle_contract(_request: web.Request) -> web.Response:
+    """The agent-facing contract (ADR-0005 decision 1), decorated with this transport.
+
+    The core document comes from ``api/contract.py`` and knows nothing about HTTP; the
+    ``http`` section added here is this adapter describing itself — the same split that
+    keeps :class:`Refused` in the API and 409 in this file. The route table is ``ROUTES``,
+    the one ``build_app`` registers from, so the served description cannot drift from the
+    served surface.
+    """
+    payload = agent_contract()
+    payload["http"] = {
+        "auth": (
+            "When a token is configured, every route except /healthz requires "
+            "`Authorization: Bearer <token>`. The token is never accepted as a query "
+            "parameter. Requests carrying an Origin header, or an unrecognised Host, "
+            "are refused."
+        ),
+        "requests": (
+            "Parameters travel as a JSON object in the body of a POST "
+            "(Content-Type: application/json); GET routes take no parameters. An "
+            "omitted optional parameter takes its default."
+        ),
+        "errors": (
+            'Every non-2xx answer is {"error": "<kind>", "detail": "<one sentence>"} — '
+            "kind is the failure mode name for 409/502/503, and the detail is written "
+            "to be read, not parsed."
+        ),
+        "routes": {
+            operation: {"method": method, "path": path} for operation, method, path, _ in ROUTES
+        },
+        "failure_mode_status": dict(FAILURE_MODE_STATUS),
+        "other_status": {
+            "200": "success, including a satisfied request that wrote nothing",
+            "400": "invalid_request — malformed body; nothing was sent",
+            "401": "unauthorized — token missing or wrong",
+            "403": "forbidden — Origin header present, or unrecognised Host",
+            "500": (
+                "error — unexpected failure; whether anything was written is unknown, "
+                "so treat it like unverified and never blind-retry"
+            ),
+        },
+        "notes": (
+            "stream_state is a WebSocket: connect to its path with a WebSocket client; "
+            'every message is {"type": "state", "state": {...}} with the same body '
+            "get_state returns. Commands are REST-only."
+        ),
+    }
+    return _json(payload)
 
 
 async def handle_state(request: web.Request) -> web.Response:
@@ -393,6 +458,27 @@ async def _pump(socket: web.WebSocketResponse, pending: asyncio.Queue[DeviceSnap
             return
 
 
+#: Every route this adapter serves, named by the operation it implements in the contract.
+#: ``build_app`` registers from this table and ``handle_contract`` describes it, so the
+#: description and the surface cannot disagree; the parity test in
+#: ``tests/integration/test_http_ws.py`` holds this list and the contract's operation
+#: list to exactly each other. Add a route here without a contract entry — or the other
+#: way round — and that test names the missing half.
+ROUTES: tuple[tuple[str, str, str, Callable[[web.Request], Awaitable[web.StreamResponse]]], ...] = (
+    ("health", "GET", "/healthz", handle_health),
+    ("get_contract", "GET", f"{API_PREFIX}/contract", handle_contract),
+    ("get_state", "GET", f"{API_PREFIX}/state", handle_state),
+    ("get_capabilities", "GET", f"{API_PREFIX}/capabilities", handle_capabilities),
+    ("stream_state", "GET", f"{API_PREFIX}/ws", handle_ws),
+    ("turn_off", "POST", f"{API_PREFIX}/command/off", handle_off),
+    ("set_mode", "POST", f"{API_PREFIX}/command/mode", handle_mode),
+    ("set_temperature", "POST", f"{API_PREFIX}/command/temperature", handle_temperature),
+    ("set_fan", "POST", f"{API_PREFIX}/command/fan", handle_fan),
+    ("yield_link", "POST", f"{API_PREFIX}/link/yield", handle_yield),
+    ("resume_link", "POST", f"{API_PREFIX}/link/resume", handle_resume),
+)
+
+
 def build_app(api: BedJetAPI, config: ServerConfig | None = None) -> web.Application:
     """Assemble the application. Separate from serving so tests can drive it directly."""
     app = web.Application(middlewares=[guard])
@@ -400,20 +486,7 @@ def build_app(api: BedJetAPI, config: ServerConfig | None = None) -> web.Applica
     app[_CONFIG_KEY] = config or ServerConfig()
     app[_SOCKETS_KEY] = set()
 
-    app.add_routes(
-        [
-            web.get("/healthz", handle_health),
-            web.get(f"{API_PREFIX}/state", handle_state),
-            web.get(f"{API_PREFIX}/capabilities", handle_capabilities),
-            web.get(f"{API_PREFIX}/ws", handle_ws),
-            web.post(f"{API_PREFIX}/command/off", handle_off),
-            web.post(f"{API_PREFIX}/command/mode", handle_mode),
-            web.post(f"{API_PREFIX}/command/temperature", handle_temperature),
-            web.post(f"{API_PREFIX}/command/fan", handle_fan),
-            web.post(f"{API_PREFIX}/link/yield", handle_yield),
-            web.post(f"{API_PREFIX}/link/resume", handle_resume),
-        ]
-    )
+    app.add_routes([web.route(method, path, handler) for _, method, path, handler in ROUTES])
     app.on_shutdown.append(_close_sockets)
     return app
 

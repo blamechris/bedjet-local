@@ -15,8 +15,10 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from bedjet_local.api import BedJetAPI
+from bedjet_local.api import CONTRACT_VERSION, BedJetAPI, agent_contract
 from bedjet_local.integrations.http_ws import (
+    FAILURE_MODE_STATUS,
+    ROUTES,
     ConfigurationRefused,
     ServerConfig,
     build_app,
@@ -321,6 +323,96 @@ async def test_the_websocket_requires_the_token_too() -> None:
         with pytest.raises(Exception, match="401"):
             async with client.ws_connect("/api/v1/ws"):
                 pass
+    finally:
+        await client.close()
+        await session.stop()
+
+
+# ── the agent-facing contract (ADR-0005 decision 1) ─────────────────────────────────────
+
+
+def test_the_contract_names_exactly_the_routes_this_adapter_serves() -> None:
+    """The parity test both module docstrings promise. ``build_app`` registers from
+    ``ROUTES`` and ``handle_contract`` describes ``ROUTES``, so within this adapter the
+    description cannot drift — what can drift is the api-layer document itself. Holding
+    the two name sets to exact equality means a route added without a contract entry, or
+    an operation described but never served, fails here by name."""
+    listed = [operation["name"] for operation in agent_contract()["operations"]]
+    operations = set(listed)
+    served = {name for name, _method, _path, _handler in ROUTES}
+    assert operations == served
+    # Set equality alone would let a duplicated name collapse silently.
+    assert len(listed) == len(operations)
+    assert len(ROUTES) == len(served)
+
+
+async def test_the_served_contract_describes_this_transport_truthfully() -> None:
+    """What an agent fetches must match what this server does: the advertised status
+    numbers are the ones the middleware produces (same mapping, by construction — pinned
+    here against the doctrine numbers), and every operation resolves to a callable route."""
+    transport = MockTransport()
+    client, session = await _client(transport)
+    try:
+        response = await client.get("/api/v1/contract")
+        assert response.status == 200
+        body = await response.json()
+
+        assert body["contract_version"] == CONTRACT_VERSION
+        assert body["http"]["failure_mode_status"] == {
+            "refused": 409,
+            "unavailable": 503,
+            "unverified": 502,
+        }
+        assert body["http"]["failure_mode_status"] == FAILURE_MODE_STATUS
+
+        routes = body["http"]["routes"]
+        assert set(routes) == {op["name"] for op in body["operations"]}
+        assert routes["set_mode"] == {"method": "POST", "path": "/api/v1/command/mode"}
+        assert routes["health"] == {"method": "GET", "path": "/healthz"}
+
+        # The shape of the http section is what a parser depends on; the prose inside it
+        # stays the review gate's business.
+        assert set(body["http"]) == {
+            "auth",
+            "requests",
+            "errors",
+            "routes",
+            "failure_mode_status",
+            "other_status",
+            "notes",
+        }
+        assert set(body["http"]["other_status"]) == {"200", "400", "401", "403", "500"}
+        # The api-layer document and this adapter's translation table, held together the
+        # same way ROUTES and the operation list are.
+        assert set(body["failure_modes"]) == set(FAILURE_MODE_STATUS)
+
+        # Every advertised route is one the running application actually registered —
+        # the document may not advertise a path this server would 404.
+        app = client.app
+        assert app is not None
+        registered = {
+            (route.method, route.resource.canonical)
+            for route in app.router.routes()
+            if route.resource is not None
+        }
+        for spec in routes.values():
+            assert (spec["method"], spec["path"]) in registered
+    finally:
+        await client.close()
+        await session.stop()
+
+
+async def test_the_contract_requires_the_token() -> None:
+    """The contract describes the control surface of a heater. ``/healthz`` stays the one
+    free route; a description of what the service can be told to do is not liveness."""
+    transport = MockTransport()
+    client, session = await _client(transport, config=ServerConfig(token=TOKEN))
+    try:
+        assert (await client.get("/api/v1/contract")).status == 401
+        response = await client.get(
+            "/api/v1/contract", headers={"Authorization": f"Bearer {TOKEN}"}
+        )
+        assert response.status == 200
     finally:
         await client.close()
         await session.stop()

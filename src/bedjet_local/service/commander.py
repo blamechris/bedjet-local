@@ -39,7 +39,7 @@ from ..protocol.constants import (
     c_to_f,
 )
 from ..protocol.packets import StatusPacket
-from ..transport.base import Transport
+from ..transport.base import Transport, TransportError
 from .reader import StateCallback, StatusReader
 
 log = logging.getLogger(__name__)
@@ -243,9 +243,24 @@ class Commander:
         log.warning("WRITING %s to %s — %s", payload.hex(" "), COMMAND_UUID, description)
         self._updated.clear()
         self._latest = None
-        # response=None: the transport picks the write type from the characteristic's own
-        # properties. Pinning it wrong is how RL-018 threw every command away.
-        await self._transport.write(COMMAND_UUID, payload)
+        try:
+            # response=None: the transport picks the write type from the characteristic's own
+            # properties. Pinning it wrong is how RL-018 threw every command away.
+            await self._transport.write(COMMAND_UUID, payload)
+        except TransportError as exc:
+            # From this point on, "the link failed" and "the device was written to" are not
+            # exclusive: a write request can be delivered and its confirmation lost. That is
+            # the epistemic state CommandUnverified exists for — reporting it as a link
+            # problem would tell the caller "nothing was sent" about a write that may have
+            # landed (ADR-0004 decision 4).
+            raise CommandUnverified(
+                f"the link failed during the write of {payload.hex(' ')} ({description}): "
+                f"{exc}.\n"
+                f"The request may or may not have reached the device — a write can be "
+                f"delivered even when the link dies before its confirmation. Read the "
+                f"state once the link returns before deciding anything, and do not "
+                f"blind-retry."
+            ) from exc
         # In poll mode this pulls the next read forward so verification sees the device's
         # reaction in one round-trip rather than at the next tick; under notifications it
         # is a no-op, since the device announces its own changes.
@@ -298,11 +313,13 @@ class Commander:
         )
 
     async def set_mode(self, mode: CommandMode, *, dry_run: bool = False) -> CommandResult:
-        """📖 UNVERIFIED for every operand except OFF. `01 <mode>` — select a mode.
+        """`01 <mode>` — select a mode. COOL ✅ VERIFIED (RL-021); HEAT unlocked but 📖.
 
-        Only :data:`THERMALLY_SAFE_MODES` may be sent. Heat, turbo and extended heat are
-        refused here — in code — because they are the commands that make heat, and
-        `SAFETY.md` puts those last and attended.
+        Only :data:`UNLOCKED_MODES` may be sent. Turbo and extended heat are refused here —
+        in code — because turbo is the device's most aggressive setting and nothing needs
+        it, and extended heat has never been observed in status, so its result could not be
+        verified even if it worked. Heat was unlocked once OFF was proven reproducible,
+        respecting `SAFETY.md`'s ordering (heat last, attended).
         """
         if mode not in UNLOCKED_MODES:
             raise CommandRefused(
