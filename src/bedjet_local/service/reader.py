@@ -9,7 +9,13 @@ Read-only by construction — this module has no way to send a command.
   17,975 of 17,982 packets across five hardware runs arrived split (RL-026 through
   RL-033), so the follow-up read runs essentially always, every occurrence opens the
   RL-017 reassembly window, and a pending read overlapping incoming notifications on the
-  same characteristic is the race behind #6's ``InvalidStateError`` inside bleak.
+  same characteristic was the race behind #6's ``InvalidStateError`` inside bleak. That
+  race is closed at subscribe time: :func:`looks_like_packet_start` is handed to the
+  backend as its notification discriminator, so a value that begins a packet is routed
+  to us as a notification even while our follow-up read is pending. The routing is sound
+  because on this firmware the two directions cannot produce each other's shape: every
+  notification begins a packet, and a read serves the pinned remainder window — never a
+  packet start — measured at 303/303 and promoted to ✅ in RL-034.
 
 - **Poll** (``poll_interval=<seconds>``): never subscribe; read the characteristic on an
   interval and accept only whole packets. One sequential loop, so there is nothing to
@@ -153,7 +159,15 @@ class StatusReader:
                 self._poll_interval,
             )
             return
-        await self._transport.subscribe(STATUS_UUID, self._on_notify)
+        # The discriminator is the #6 guard. While our follow-up read is pending, the
+        # backend cannot tell that read's response from the next notification — both
+        # arrive the same way — and mis-taking a notification for the response both
+        # corrupts the pairing (RL-017's shape) and leaves the true response to land on
+        # a retired future. "Begins a packet" decides it: notifications always do, reads
+        # serve the remainder window and never do (RL-034, ✅).
+        await self._transport.subscribe(
+            STATUS_UUID, self._on_notify, notification_discriminator=looks_like_packet_start
+        )
         log.info("status reader started")
 
     async def stop(self) -> None:

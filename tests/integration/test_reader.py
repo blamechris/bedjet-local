@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from bedjet_local.device.state import BedJetState, Power
 from bedjet_local.protocol.constants import STATUS_UUID, StatusMode
+from bedjet_local.protocol.decode import looks_like_packet_start
 from bedjet_local.protocol.packets import StatusPacket
 from bedjet_local.service.reader import StatusReader
 from bedjet_local.transport.base import TransportError
@@ -81,6 +82,23 @@ async def test_unknown_mode_leaves_power_unknown() -> None:
     transport.emit(STATUS_UUID, build_status(mode=0x7F))
 
     assert collector.states[0].power is Power.UNKNOWN
+
+
+async def test_notify_mode_subscribes_with_the_packet_start_discriminator() -> None:
+    """#6: the reader must teach the transport to tell notifications from read responses.
+
+    The follow-up read runs on essentially every packet, so a subscription without a
+    discriminator leaves the backend guessing on essentially every packet — and a wrong
+    guess both mis-pairs the reassembly (RL-017's shape) and drops the true response on a
+    retired future (#6's ``InvalidStateError``). ``looks_like_packet_start`` is the right
+    oracle because the two directions cannot produce each other's shape on this firmware:
+    notifications always begin a packet, reads always serve the remainder window (RL-034).
+    """
+    transport = MockTransport()
+    await transport.connect("mock")
+    await StatusReader(transport, Collector()).start()
+
+    assert transport.discriminators[STATUS_UUID] is looks_like_packet_start
 
 
 async def test_incomplete_packet_triggers_follow_up_read() -> None:

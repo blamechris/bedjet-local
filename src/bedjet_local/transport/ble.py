@@ -15,6 +15,7 @@ import logging
 from collections.abc import Iterator
 
 from bleak import BleakScanner
+from bleak.args.corebluetooth import CBStartNotifyArgs
 from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError
 from bleak_retry_connector import (
@@ -26,7 +27,7 @@ from bleak_retry_connector import (
 )
 
 from ..protocol.constants import NAME_PREFIXES, SERVICE_UUID
-from .base import DiscoveredDevice, NotifyCallback, TransportError
+from .base import DiscoveredDevice, NotificationDiscriminator, NotifyCallback, TransportError
 
 log = logging.getLogger(__name__)
 
@@ -292,15 +293,30 @@ class BleakTransport:
             with _bleak_errors_as_transport(f"writing {characteristic}"):
                 await self._require().write_gatt_char(characteristic, data, response=response)
 
-    async def subscribe(self, characteristic: str, callback: NotifyCallback) -> None:
+    async def subscribe(
+        self,
+        characteristic: str,
+        callback: NotifyCallback,
+        *,
+        notification_discriminator: NotificationDiscriminator | None = None,
+    ) -> None:
         client = self._require()
 
         def _on_notify(_sender: object, data: bytearray) -> None:
             log.debug("notify %s -> %s", characteristic, bytes(data).hex(" "))
             callback(bytes(data))
 
+        # The discriminator goes to bleak's CoreBluetooth backend, where notifications
+        # and read responses for one characteristic share a single delegate callback.
+        # Without it, a value arriving while a read is pending is always taken for the
+        # read's response — even when it is a notification — and the response that then
+        # follows hits a future that is already resolved: an ``InvalidStateError`` raised
+        # inside bleak's delegate, on the event loop, where no caller can catch it (#6).
+        # With it, bleak asks the value which one it is. Backends whose transports keep
+        # the two paths separate ignore ``cb`` entirely.
+        cb_args: CBStartNotifyArgs = {"notification_discriminator": notification_discriminator}
         with _bleak_errors_as_transport(f"subscribing to {characteristic}"):
-            await client.start_notify(characteristic, _on_notify)
+            await client.start_notify(characteristic, _on_notify, cb=cb_args)
         log.info("subscribed to %s", characteristic)
 
     async def unsubscribe(self, characteristic: str) -> None:

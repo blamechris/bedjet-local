@@ -19,6 +19,11 @@ from typing import Protocol, runtime_checkable
 
 NotifyCallback = Callable[[bytes], None]
 
+NotificationDiscriminator = Callable[[bytes], bool]
+"""Given a characteristic value, ``True`` if it is a notification, ``False`` if it is the
+response to a read. Only a backend where the two arrive through one delivery path needs
+the distinction — see :meth:`Transport.subscribe`."""
+
 
 @dataclass(frozen=True, slots=True)
 class DiscoveredDevice:
@@ -66,7 +71,26 @@ class Transport(Protocol):
         """
         ...
 
-    async def subscribe(self, characteristic: str, callback: NotifyCallback) -> None: ...
+    async def subscribe(
+        self,
+        characteristic: str,
+        callback: NotifyCallback,
+        *,
+        notification_discriminator: NotificationDiscriminator | None = None,
+    ) -> None:
+        """Subscribe to notifications on a characteristic.
+
+        The discriminator teaches the backend to tell a notification from a read
+        response. CoreBluetooth delivers both through the same delegate callback, so
+        while a read is in flight every arriving value is presumed to be its response
+        unless something can say otherwise. A notification landing in that window is
+        consumed as the read's result — the mis-pairing behind RL-017 — and the real
+        response then lands on a future that has already been resolved, which is #6's
+        ``InvalidStateError`` inside bleak, unreachable by any ``try`` of ours. A caller
+        that both subscribes to and reads the same characteristic should pass one; a
+        backend without the ambiguity is free to ignore it.
+        """
+        ...
 
     async def unsubscribe(self, characteristic: str) -> None: ...
 

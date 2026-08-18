@@ -69,7 +69,7 @@ class _FakeClient:
     async def write_gatt_char(self, _characteristic: str, _data: bytes, **_kw: object) -> None:
         raise self._exc
 
-    async def start_notify(self, _characteristic: str, _cb: object) -> None:
+    async def start_notify(self, _characteristic: str, _cb: object, **_kw: object) -> None:
         raise self._exc
 
     async def stop_notify(self, _characteristic: str) -> None:
@@ -208,6 +208,41 @@ async def test_subscribe_translates() -> None:
     transport = _transport_holding(POWERED_OFF)
     with pytest.raises(TransportError):
         await transport.subscribe("0000dead-0000-1000-8000-00805f9b34fb", lambda _data: None)
+
+
+async def test_subscribe_hands_bleak_the_notification_discriminator() -> None:
+    """The #6 guard exists only if the discriminator actually reaches bleak.
+
+    CoreBluetooth funnels notifications and read responses for one characteristic through
+    a single delegate callback, and while a read is pending bleak assumes every value is
+    the response — unless ``start_notify``'s ``cb`` argument carries a discriminator to
+    ask. A notification mistaken for the response steals the read's future, and the true
+    response then raises ``InvalidStateError`` on the already-resolved future, inside
+    bleak, past every ``try`` of ours (RL-033 §6). So the wiring *is* the fix: record what
+    ``start_notify`` receives and assert the function arrives intact, None staying None.
+    """
+    received: list[object] = []
+
+    class _Recorder:
+        is_connected = True
+
+        async def start_notify(self, _characteristic: str, _cb: object, **kwargs: object) -> None:
+            received.append(kwargs.get("cb"))
+
+    transport = ble.BleakTransport()
+    transport._client = _Recorder()  # type: ignore[assignment]
+
+    def is_notification(_data: bytes) -> bool:  # pragma: no cover - never called here
+        return True
+
+    uuid = "0000dead-0000-1000-8000-00805f9b34fb"
+    await transport.subscribe(uuid, lambda _data: None, notification_discriminator=is_notification)
+    await transport.subscribe(uuid, lambda _data: None)
+
+    assert received == [
+        {"notification_discriminator": is_notification},
+        {"notification_discriminator": None},
+    ]
 
 
 async def test_unsubscribe_translates() -> None:
