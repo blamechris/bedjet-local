@@ -12,6 +12,7 @@ Nothing in ``protocol/``, ``device/``, or above may import ``bleak``. Enforced b
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
@@ -71,6 +72,20 @@ class Transport(Protocol):
 
     async def services(self) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
         """Discovered GATT layout: ``{service_uuid: [(char_uuid, (properties, ...))]}``."""
+        ...
+
+    def adapter_power_on_event(self) -> asyncio.Event:
+        """The event that fires when the host's Bluetooth adapter powers on.
+
+        Set on every off→on transition the backend can observe; the consumer clears it to
+        arm for the next one. Single consumer by design — the session's reconnect loop —
+        two clearers would race each other for the same edge.
+
+        A backend that cannot observe adapter state returns an event that never fires,
+        which degrades to exactly the behavior before #20: every reconnect backoff runs to
+        completion. Never ``None`` — an unobservable adapter and a quiet one look the same
+        to a waiter, so there is no reason to make callers tell them apart.
+        """
         ...
 
 

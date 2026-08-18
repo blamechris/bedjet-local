@@ -135,6 +135,76 @@ async def test_a_refused_reconnect_is_a_warning_without_a_traceback(
         await session.stop()
 
 
+async def test_adapter_power_on_cuts_the_backoff_short() -> None:
+    """#20, RL-024 item 4: the adapter came back 22 s before a mid-backoff daemon noticed.
+    Recovery latency must be bounded by device availability, not by where in a sleep the
+    power-on happened to land. The backoff here is 30 s — far beyond this test's budget —
+    so reconnecting at all proves the sleep was cut."""
+    transport = MockTransport()
+    session = await _started(transport, backoff_initial=30.0, backoff_max=60.0)
+    try:
+        transport.refuse_next_connects(1)
+        transport.drop()
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if transport.connect_attempts >= 2:
+                break
+        assert transport.connect_attempts >= 2, "the first reconnect attempt should have run"
+        # Via the snapshot rather than `session.link is LinkState.LOST`: mypy narrows the
+        # property to that literal and then rejects the CONNECTED comparisons below as
+        # non-overlapping, not knowing the supervisor mutates it.
+        assert session.snapshot().available is False
+
+        transport.power_on_adapter()
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if session.link is LinkState.CONNECTED:
+                break
+        assert session.link is LinkState.CONNECTED, (
+            "an adapter power-on during backoff should have triggered an immediate reconnect"
+        )
+    finally:
+        await session.stop()
+
+
+async def test_a_stale_power_on_does_not_defeat_the_backoff() -> None:
+    """The event is re-armed before every attempt: a power-on from before the drop is not
+    a licence to hammer reconnects after it. Each edge buys at most one early try."""
+    transport = MockTransport()
+    session = await _started(transport, backoff_initial=30.0, backoff_max=60.0)
+    try:
+        transport.power_on_adapter()  # stale: the adapter bounced while the link was up
+        transport.refuse_next_connects(50)
+        transport.drop()
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if transport.connect_attempts >= 2:
+                break
+        assert transport.connect_attempts == 2
+
+        # The stale edge was cleared before that attempt, so the 30 s backoff must hold.
+        await asyncio.sleep(0.2)
+        assert transport.connect_attempts == 2, "a stale power-on must not grant extra tries"
+        assert session.link is LinkState.LOST
+    finally:
+        await session.stop()
+
+
+async def test_a_power_on_during_a_yield_does_not_reclaim_the_link() -> None:
+    """The yield is the owner's. An adapter event is a hint about reachability, never
+    permission to take the heater back early."""
+    transport = MockTransport()
+    session = await _started(transport)
+    try:
+        await session.yield_link(60.0)
+        transport.power_on_adapter()
+        await asyncio.sleep(0.2)
+        assert session.link is LinkState.YIELDED
+        assert transport.is_connected is False
+    finally:
+        await session.stop()
+
+
 async def test_yield_releases_the_link_and_blocks_reconnection() -> None:
     """The escape hatch that makes running a daemon against this device acceptable: the
     owner has no working physical remote, so they must be able to get their heater back."""
