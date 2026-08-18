@@ -364,11 +364,24 @@ class BleakTransport:
         # The first report is the *current* state, not a transition; it seeds the baseline
         # so a daemon started with the adapter already on does not fire a phantom edge.
         was_on: bool | None = None
-        while True:
-            await manager.did_update_state_event.wait()
-            manager.did_update_state_event.clear()
-            is_on = bool(manager.central_manager.state() == cb.CBManagerStatePoweredOn)
-            if is_on and was_on is False:
-                log.info("the Bluetooth adapter powered on")
-                powered_on.set()
-            was_on = is_on
+        try:
+            while True:
+                await manager.did_update_state_event.wait()
+                manager.did_update_state_event.clear()
+                is_on = bool(manager.central_manager.state() == cb.CBManagerStatePoweredOn)
+                if is_on and was_on is False:
+                    log.info("the Bluetooth adapter powered on")
+                    powered_on.set()
+                was_on = is_on
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A watcher that dies must say so: as a bare task, an uncaught exception here
+            # would surface only as an unretrieved-exception note at shutdown, while every
+            # backoff silently went back to running full — the degradation is acceptable,
+            # the silence is not.
+            log.warning(
+                "the adapter state watcher died; reconnect backoff will run to "
+                "completion from here",
+                exc_info=True,
+            )
